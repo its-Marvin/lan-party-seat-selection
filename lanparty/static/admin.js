@@ -3,31 +3,35 @@
 const $ = (id) => document.getElementById(id);
 let settingsCache = null;
 
-/** Sign-in form shown while the admin area stays on screen (session expired mid-edit). */
-function requireLogin() {
-  $("login-card").hidden = false;
-  $("session-controls").hidden = true;
-  showMessage($("login-msg"), "Your session has expired. Please sign in again.", "info");
-  $("login-card").scrollIntoView({ behavior: "smooth" });
-  $("login-form").password.focus({ preventScroll: true });
+// Settings typed into the form but not saved yet. Kept (like an unsaved layout
+// draft) across a sign-in after the session expired, instead of being reloaded.
+let settingsDirty = false;
+
+function unsavedWork() {
+  return [window.LayoutEditor.isDirty() && "layout", settingsDirty && "settings"].filter(Boolean);
 }
 
 async function checkSession() {
   const { admin, actor } = await api("GET", "/admin/session");
-  const keepDraft = window.LayoutEditor.isDirty();
+  // Never show admin data (emails, event code, audit log) without a session;
+  // unsaved work stays in memory and is shown again after signing in.
   $("login-card").hidden = admin;
-  // an unsaved layout draft stays visible (and is not reloaded) until it is saved or discarded
-  $("admin-area").hidden = !admin && !keepDraft;
+  $("admin-area").hidden = !admin;
   $("session-controls").hidden = !admin;
   $("actor").textContent = actor ? `Logged in as ${actor}` : "";
-  if (!admin && keepDraft) requireLogin();
-  if (admin) {
-    showMessage($("login-msg"), "");
-    await loadSettings();
-    if (!keepDraft) await window.LayoutEditor.load();
-    await loadUsers();
-    await loadAudit();
+  if (!admin) {
+    const unsaved = unsavedWork();
+    showMessage($("login-msg"), unsaved.length
+      ? `Your unsaved ${unsaved.join(" and ")} changes are kept in this tab. Sign in again, then save them.`
+      : "", "info");
+    if (unsaved.length) $("login-form").password.focus();
+    return;
   }
+  showMessage($("login-msg"), "");
+  await loadSettings();
+  if (!window.LayoutEditor.isDirty()) await window.LayoutEditor.load();
+  await loadUsers();
+  await loadAudit();
 }
 
 async function loadUsers() {
@@ -150,28 +154,41 @@ async function loadAudit() {
 
 async function loadSettings() {
   settingsCache = await api("GET", "/admin/settings");
+  $("event-code-hint").classList.toggle("warning", !settingsCache.event_code);
+  $("closed-banner").hidden = !!settingsCache.event_code;
+  if (settingsDirty) return;          // don't overwrite edits that were not saved yet
   const f = $("settings-form");
   for (const key of ["event_name", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
     f.elements[key].value = settingsCache[key];
   }
   f.elements.amount.value = (settingsCache.amount_cents / 100).toFixed(2);
-  $("event-code-hint").classList.toggle("warning", !settingsCache.event_code);
-  $("closed-banner").hidden = !!settingsCache.event_code;
 }
 
 async function onSaveSettings(event) {
   event.preventDefault();
   const f = event.target;
   const msg = $("settings-msg");
+  showMessage(msg, "");
   const payload = Object.fromEntries(new FormData(f).entries());
+  // lock the form until the save and reload are done, so no edit made in the
+  // meantime is silently replaced by the reloaded values
+  const controls = Array.from(f.elements).filter((c) => !c.disabled);
+  controls.forEach((c) => (c.disabled = true));
   try {
     await api("PUT", "/admin/settings", payload);
+    settingsDirty = false;
     await loadSettings();
+    showMessage(msg, "Settings saved.", "success");
     await loadUsers();
     await loadAudit();
-    showMessage(msg, "Settings saved.", "success");
   } catch (err) {
-    showMessage(msg, err.message);
+    if (err.status === 401) {
+      await checkSession();           // keeps the form values, offers sign-in
+    } else {
+      showMessage(msg, err.message);
+    }
+  } finally {
+    controls.forEach((c) => (c.disabled = false));
   }
 }
 
@@ -188,12 +205,16 @@ async function onLogin(event) {
   }
 }
 
-document.addEventListener("admin-auth-required", () => checkSession().catch(requireLogin));
+window.addEventListener("beforeunload", (e) => {
+  if (settingsDirty) { e.preventDefault(); e.returnValue = ""; }
+});
+document.addEventListener("admin-auth-required", () => checkSession().catch(() => {}));
 document.addEventListener("layout-saved", () => loadUsers().then(loadAudit).catch(() => {}));
 
 document.addEventListener("DOMContentLoaded", () => {
   $("login-form").addEventListener("submit", onLogin);
   $("settings-form").addEventListener("submit", onSaveSettings);
+  $("settings-form").addEventListener("input", () => (settingsDirty = true));
   $("logout").addEventListener("click", async () => {
     await api("POST", "/admin/logout");
     await checkSession();
@@ -208,6 +229,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const bytes = crypto.getRandomValues(new Uint8Array(6));
     $("settings-form").elements.event_code.value = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+    settingsDirty = true;
   });
   $("refresh-audit").addEventListener("click", () => loadAudit().catch((err) => alert(err.message)));
   checkSession().catch((err) => showMessage($("login-msg"), err.message));

@@ -119,3 +119,36 @@ def test_repeated_confirmation_is_a_no_op(app, admin):
     assert again["paid_at"] == first["paid_at"]
     actions = [e["action"] for e in admin.get("/api/admin/audit").get_json()["entries"]]
     assert actions.count("payment.confirmed") == 1
+
+
+# --- /seats reads layout and occupants from one snapshot -----------------------
+
+def test_seat_plan_is_one_consistent_snapshot(app, monkeypatch):
+    from lanparty import api as api_module
+    from lanparty import layout as lay
+
+    headers, _ = register(app.test_client(), 1)
+    client = app.test_client()
+    assert client.post("/api/me/seat", json={"seat": "A1"}, headers=headers).status_code == 200
+
+    real_load = lay.load
+    outcome = {}
+
+    def load_then_concurrent_write():
+        layout = real_load()
+        # another worker tries to move the reservation between the two reads
+        other = sqlite3.connect(app.config["DATABASE"], timeout=0.3)
+        try:
+            other.execute("UPDATE users SET seat = 'B1' WHERE seat = 'A1'")
+            other.commit()
+            outcome["write"] = "committed"
+        except sqlite3.OperationalError:
+            outcome["write"] = "blocked"
+        finally:
+            other.close()
+        return layout
+
+    monkeypatch.setattr(api_module.lay, "load", load_then_concurrent_write)
+    seats = {s["id"]: s for s in client.get("/api/seats").get_json()["seats"]}
+    assert outcome["write"] == "blocked"
+    assert seats["A1"]["status"] == "reserved" and seats["B1"]["status"] == "free"

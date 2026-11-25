@@ -94,6 +94,24 @@ def write_transaction():
     db.commit()
 
 
+@contextmanager
+def read_snapshot():
+    """Run several reads against one consistent database state.
+
+    The deferred transaction takes SQLite's shared lock at the first read and
+    keeps it until the block ends, so no writer can commit in between. Keep the
+    block short and free of writes.
+    """
+    db = get_db()
+    if db.in_transaction:
+        db.commit()
+    db.execute("BEGIN")
+    try:
+        yield db
+    finally:
+        db.commit()
+
+
 def close_db(_exc=None) -> None:
     conn = g.pop("db", None)
     if conn is not None:

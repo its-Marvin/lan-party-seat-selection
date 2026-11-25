@@ -12,6 +12,8 @@ window.LayoutEditor = (() => {
     selected: null,       // id of the selected group or item
     occupancy: new Map(), // seat id (saved labels) -> {status, name}
     dirty: false,
+    revision: 0,          // bumped on every draft change
+    saving: false,        // a PUT is in flight
   };
 
   const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -86,6 +88,7 @@ window.LayoutEditor = (() => {
 
   function markDirty() {
     ed.dirty = true;
+    ed.revision++;
     renderCanvas();
     renderSummary();
   }
@@ -146,8 +149,9 @@ window.LayoutEditor = (() => {
     byId("layout-summary").textContent =
       `${groups.length} groups · ${tables} tables · ${tables * SEATS_PER_TABLE} seats · ${items} area elements` +
       (ed.dirty ? " · unsaved changes" : "");
-    byId("save-layout").disabled = !ed.dirty;
-    byId("discard-layout").disabled = !ed.dirty;
+    byId("save-layout").disabled = !ed.dirty || ed.saving;
+    byId("save-layout").textContent = ed.saving ? "Saving…" : "Save layout";
+    byId("discard-layout").disabled = !ed.dirty || ed.saving;
   }
 
   function makeInteractive(node, kind, obj, bad, ariaLabel) {
@@ -470,24 +474,48 @@ window.LayoutEditor = (() => {
   }
 
   async function save() {
+    if (ed.saving) return;
     const msg = byId("layout-msg");
     showMessage(msg, "");
+    // Send a snapshot: the editor stays usable while the request is pending, and
+    // changes made in the meantime must not be replaced by the reloaded layout.
+    const submitted = clone(ed.draft);
+    const revision = ed.revision;
+    ed.saving = true;
+    renderSummary();
     try {
-      const res = await api("PUT", "/admin/layout", ed.draft);
+      const res = await api("PUT", "/admin/layout", submitted);
       const moved = Object.keys(res.moved || {}).length;
+      const movedText = moved ? ` ${moved} participant(s) got new seat numbers.` : "";
       document.dispatchEvent(new CustomEvent("layout-saved"));
-      await load();
-      showMessage(msg, "Layout saved." + (moved ? ` ${moved} participant(s) got new seat numbers.` : ""), "success");
+      if (ed.revision === revision) {
+        await load();
+        showMessage(msg, "Layout saved." + movedText, "success");
+      } else {
+        await refreshSaved();
+        showMessage(msg, "Layout saved." + movedText +
+          " Changes you made while it was saving are not saved yet.", "info");
+      }
     } catch (err) {
       if (err.status === 401) {
-        // keep the draft; admin.js shows the sign-in form, then Save can be retried
-        showMessage(msg, "Your admin session has expired. Sign in again above – your unsaved " +
-          "layout is kept – then click Save layout again.");
+        // keep the draft; admin.js offers sign-in, then Save can be retried
+        showMessage(msg, "Your admin session has expired – sign in again, then click Save layout.");
         document.dispatchEvent(new CustomEvent("admin-auth-required"));
         return;
       }
       showMessage(msg, err.message);
+    } finally {
+      ed.saving = false;
+      renderSummary();
     }
+  }
+
+  /** Take the stored layout and occupancy from the server but keep the draft. */
+  async function refreshSaved() {
+    const data = await api("GET", "/seats");
+    ed.saved = data.layout;
+    setOccupancy(data.seats, false);
+    renderCanvas();     // not the side panel: the admin may be typing in it
   }
 
   function discard() {

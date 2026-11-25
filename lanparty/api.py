@@ -15,7 +15,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from . import layout as lay
 from . import security as sec
 from . import settings as cfg
-from .db import get_db, write_transaction
+from .db import get_db, read_snapshot, write_transaction
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -312,10 +312,15 @@ def info():
 
 @bp.get("/seats")
 def seats():
-    layout = lay.load()
-    rows = get_db().execute("SELECT seat, name, paid FROM users WHERE seat IS NOT NULL").fetchall()
+    # Layout, occupants and the participant must come from the same state: a
+    # layout save renames seats, and mixing old layout with new seat ids would
+    # show occupied seats as free or people in the wrong group. The checks below
+    # write (rate limits, session refresh), so they run after the snapshot.
+    with read_snapshot() as db:
+        layout = lay.load()
+        rows = db.execute("SELECT seat, name, paid FROM users WHERE seat IS NOT NULL").fetchall()
+        me = current_user()
     taken = {r["seat"]: r for r in rows}
-    me = current_user()
     # Having a valid registration code and being allowed to see names are
     # different things: admins see names but still need the code to register.
     header = request.headers.get("X-Event-Code")
