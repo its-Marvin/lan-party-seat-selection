@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Party – Admin</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/layout-editor.js" defer></script>
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap header-row">
+      <h1>Admin</h1>
+      <div class="header-actions">
+        <a href="/">← Public page</a>
+        <span id="session-controls" hidden>
+          <span class="muted small" id="actor"></span>
+          <button type="button" id="logout">Log out</button>
+          <button type="button" id="logout-all" title="End every admin session, e.g. after a device was lost">Log out everywhere</button>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card" id="login-card" hidden>
+      <h2>Log in</h2>
+      <form id="login-form" class="form-row">
+        <label>Your name (for the audit log) <input name="name" maxlength="40" autocomplete="name" placeholder="admin"></label>
+        <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
+        <button class="primary">Log in</button>
+      </form>
+      <p id="login-msg" class="message"></p>
+    </section>
+
+    <div id="admin-area" hidden>
+      <p class="card banner warning" id="closed-banner" hidden>
+        ⚠️ No event code is set, so <strong>registration is closed</strong> and visitors can't see any names.
+        Set a code under Settings → Access to open registration.
+      </p>
+      <section class="card">
+        <h2>Participants</h2>
+        <p class="muted small" id="stats"></p>
+        <p id="users-msg" class="message"></p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Email</th><th>Seat</th><th>Status</th><th>Registered</th><th>Actions</th></tr>
+            </thead>
+            <tbody id="users"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" id="layout-card">
+        <h2>Seat layout</h2>
+        <p class="muted small">
+          Drag groups and area elements to arrange them on the event area (or select one and use the arrow keys).
+          One grid square is one seat; every table seats two people. Seats are numbered per group: A1, A2, …
+          Area elements can be resized with the handle in their corner (or Shift + arrow keys).
+        </p>
+        <div class="editor-toolbar">
+          <label>Area width <input id="area-width" type="number" min="4" max="200"></label>
+          <label>Area height <input id="area-height" type="number" min="4" max="200"></label>
+          <button type="button" id="add-group">+ Add group</button>
+          <span id="layout-summary" class="muted small"></span>
+          <span class="spacer"></span>
+          <button type="button" id="discard-layout">Discard changes</button>
+          <button type="button" id="save-layout" class="primary">Save layout</button>
+        </div>
+        <div class="editor-toolbar add-items">
+          <span class="muted small">Add area element:</span>
+          <button type="button" data-add-item="door">🚪 Door</button>
+          <button type="button" data-add-item="window">🪟 Window</button>
+          <button type="button" data-add-item="sleeping">🛏️ Sleeping area</button>
+          <button type="button" data-add-item="food">🍕 Food &amp; drinks</button>
+          <button type="button" data-add-item="other">📍 Other</button>
+        </div>
+        <div class="editor">
+          <div id="layout-canvas" class="seat-map editor-canvas" aria-label="Layout editor"></div>
+          <aside class="group-panel">
+            <p id="group-hint" class="muted small">Select a group or area element to edit it.</p>
+            <form id="group-form" hidden>
+              <h3>Group <span id="group-title"></span></h3>
+              <label>Label (1–3 letters) <input name="label" maxlength="3" required autocomplete="off"></label>
+              <label>Name (optional) <input name="name" maxlength="60" placeholder="e.g. Clan corner"></label>
+              <div class="pair">
+                <label>Tables <input name="tables" type="number" min="1" max="60" required></label>
+                <label>Tables per row <input name="per_row" type="number" min="1" max="60" required></label>
+              </div>
+              <label>Orientation
+                <select name="orientation">
+                  <option value="horizontal">Horizontal (rows left → right)</option>
+                  <option value="vertical">Vertical (rows top → bottom)</option>
+                </select>
+              </label>
+              <div class="pair">
+                <label>X <input name="x" type="number" min="0" max="200"></label>
+                <label>Y <input name="y" type="number" min="0" max="200"></label>
+              </div>
+              <p class="muted small" id="group-info"></p>
+              <div class="actions">
+                <button type="button" class="duplicate-selected">Duplicate</button>
+                <button type="button" class="danger delete-selected">Delete</button>
+              </div>
+            </form>
+            <form id="item-form" hidden>
+              <h3 id="item-title"></h3>
+              <label>Type
+                <select name="type">
+                  <option value="door">🚪 Door</option>
+                  <option value="window">🪟 Window</option>
+                  <option value="sleeping">🛏️ Sleeping area</option>
+                  <option value="food">🍕 Food &amp; drinks</option>
+                  <option value="other">📍 Other</option>
+                </select>
+              </label>
+              <label>Label (optional) <input name="label" maxlength="40" autocomplete="off"></label>
+              <div class="pair">
+                <label>X <input name="x" type="number" min="0" max="200"></label>
+                <label>Y <input name="y" type="number" min="0" max="200"></label>
+              </div>
+              <div class="pair">
+                <label>Width <input name="w" type="number" min="1" max="200"></label>
+                <label>Height <input name="h" type="number" min="1" max="200"></label>
+              </div>
+              <div class="actions">
+                <button type="button" class="duplicate-selected">Duplicate</button>
+                <button type="button" class="danger delete-selected">Delete</button>
+              </div>
+            </form>
+          </aside>
+        </div>
+        <ul id="layout-problems" class="problems"></ul>
+        <p id="layout-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <h2>Settings</h2>
+        <form id="settings-form" class="settings">
+          <fieldset>
+            <legend>Event</legend>
+            <label>Name <input name="event_name" required maxlength="120"></label>
+            <label>Start <input name="event_start" type="datetime-local"></label>
+            <label>End <input name="event_end" type="datetime-local"></label>
+            <label>Location <input name="location" maxlength="200"></label>
+            <label class="full">Description / info <textarea name="description" rows="6" maxlength="5000"></textarea></label>
+          </fieldset>
+          <fieldset>
+            <legend>Access</legend>
+            <label>Event code (4–6 letters or digits)
+              <span class="copy-row">
+                <input name="event_code" class="code-input" maxlength="6" pattern="[A-Za-z0-9]{4,6}" autocomplete="off" spellcheck="false">
+                <button type="button" id="generate-code">Generate</button>
+              </span>
+            </label>
+            <p class="muted small full" id="event-code-hint">
+              Share the code with your guests. Without it, visitors see which seats are taken but not by whom,
+              and they can't register. While no code is set, registration is closed.
+              Changing the code doesn't affect people who are already registered.
+            </p>
+          </fieldset>
+          <fieldset>
+            <legend>Payment</legend>
+            <label>PayPal address <input name="paypal_address" maxlength="200" placeholder="you@example.com or paypal.me/you"></label>
+            <label>Amount due (€) <input name="amount" inputmode="decimal" required></label>
+            <label>Hold unpaid reservations for (hours, 0 = forever)
+              <input name="reservation_hours" type="number" min="0" max="1440" required></label>
+          </fieldset>
+          <div class="actions"><button class="primary">Save settings</button></div>
+        </form>
+        <p id="settings-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <div class="header-row">
+          <h2>Audit log</h2>
+          <button type="button" id="refresh-audit">Refresh</button>
+        </div>
+        <p class="muted small">Latest 200 entries: admin logins (including failed attempts), payments, moves,
+          removals, login links, settings and layout changes, and automatically released reservations.</p>
+        <div class="table-wrap">
+          <table class="audit-table">
+            <thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Details</th></tr></thead>
+            <tbody id="audit"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

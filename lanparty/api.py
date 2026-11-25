@@ -1,0 +1,688 @@
+"""JSON API for participants and admins."""
+
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+import hmac
+import json
+import math
+import re
+import sqlite3
+import time
+import unicodedata
+
+from flask import Blueprint, current_app, g, jsonify, request
+
+from . import layout as lay
+from . import security as sec
+from . import settings as cfg
+from .db import get_db, read_snapshot, write_transaction
+
+bp = Blueprint("api", __name__, url_prefix="/api")
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, message: str, retry_after: int | None = None):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.retry_after = retry_after
+
+
+@bp.errorhandler(ApiError)
+def _api_error(err: ApiError):
+    resp = jsonify(error=err.message)
+    resp.status_code = err.status
+    if err.retry_after:
+        resp.headers["Retry-After"] = str(err.retry_after)
+    return resp
+
+
+@bp.errorhandler(cfg.SettingsError)
+@bp.errorhandler(lay.LayoutError)
+def _validation_error(err: ValueError):
+    return jsonify(error=str(err)), 400
+
+
+def _reject_constant(name):
+    raise ValueError(f"{name} is not valid JSON")
+
+
+def _finite_float(text):
+    value = float(text)
+    if not math.isfinite(value):  # e.g. 1e400 overflows to infinity
+        raise ValueError("number out of range")
+    return value
+
+
+def json_body() -> dict:
+    """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON types)."""
+    if not request.is_json:
+        raise ApiError(415, "Expected a JSON request body (Content-Type: application/json).")
+    try:
+        data = json.loads(request.get_data(cache=True) or b"null",
+                          parse_constant=_reject_constant, parse_float=_finite_float)
+    except (ValueError, RecursionError):
+        raise ApiError(400, "Malformed JSON.") from None
+    if not isinstance(data, dict):
+        raise ApiError(400, "Expected a JSON object.")
+    return data
+
+
+def conf(key):
+    return current_app.config[key]
+
+
+def human_wait(seconds: int) -> str:
+    return f"{seconds} seconds" if seconds < 120 else f"{(seconds + 59) // 60} minutes"
+
+
+def enforce_limit(bucket: str, key: str, limit: int, window: float, message: str) -> None:
+    """Count this request against a limit (atomically) or refuse it with 429."""
+    wait, _ = sec.consume(bucket, key, limit, window)
+    if wait:
+        raise ApiError(429, f"{message} Please try again in {human_wait(wait)}.", retry_after=wait)
+
+
+def settings() -> dict:
+    if "settings" not in g:
+        g.settings = cfg.load()
+    return g.settings
+
+
+def utc_iso(dt: datetime) -> str:
+    return dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --- event code ----------------------------------------------------------------
+
+def registration_open() -> bool:
+    """Secure by default: without an event code, names stay hidden and registration is closed."""
+    return bool(settings()["event_code"])
+
+
+def check_event_code(value, *, raise_when_limited: bool) -> bool:
+    """Compare a submitted event code; wrong codes count towards the per-IP limit.
+
+    Once the limit is reached no code is checked at all (so guessing via any
+    endpoint stops), and ``raise_when_limited`` decides between a 429 error and
+    simply treating the code as wrong. Without a configured code nothing matches.
+    """
+    expected = settings()["event_code"]
+    if not expected:
+        return False
+    code = cfg.normalize_event_code(value) if isinstance(value, str) else ""
+    if not code:
+        return False
+    # Reserve an attempt first (atomically) and give it back if the code is right,
+    # so parallel guesses can never exceed the limit.
+    wait, attempt = sec.consume("event_code_fail", sec.ip_hash(), conf("EVENT_CODE_MAX_PER_IP"), 900)
+    if wait:
+        if raise_when_limited:
+            raise ApiError(429, f"Too many wrong event codes. Please try again in {human_wait(wait)}.",
+                           retry_after=wait)
+        return False
+    if len(code) <= 20 and hmac.compare_digest(code.encode(), expected.encode()):
+        sec.release(attempt)
+        return True
+    return False
+
+
+def is_admin_request() -> bool:
+    return bool(conf("ADMIN_PASSWORD")) and sec.current_admin_session() is not None
+
+
+# --- reservation expiry ----------------------------------------------------
+
+@bp.before_request
+def release_expired_reservations():
+    hours = settings()["reservation_hours"]
+    if hours <= 0:
+        return
+    expired_sql = ("SELECT id, name, email, seat FROM users WHERE paid = 0 AND seat IS NOT NULL "
+                   "AND reserved_at IS NOT NULL AND reserved_at <= datetime('now', ?)")
+    window = (f"-{hours} hours",)
+    if not get_db().execute(expired_sql, window).fetchone():
+        return  # cheap check without taking the write lock
+    with write_transaction() as db:
+        # read the rows (with their seats) and clear them under the same lock
+        released = db.execute(expired_sql, window).fetchall()
+        db.executemany(
+            "UPDATE users SET seat = NULL, seat_selected_at = NULL, reserved_at = NULL, "
+            "reserved_ip_hash = NULL WHERE id = ? AND paid = 0",
+            [(r["id"],) for r in released],
+        )
+    for r in released:
+        sec.audit("system", "reservation.expired", user_id=r["id"], name=r["name"],
+                  email=r["email"], seat=r["seat"], after_hours=hours)
+
+
+# --- serialisation -------------------------------------------------------
+
+def public_settings(s: dict) -> dict:
+    return {
+        "event_name": s["event_name"],
+        "event_start": s["event_start"],
+        "event_end": s["event_end"],
+        "location": s["location"],
+        "description": s["description"],
+        "paypal_address": s["paypal_address"],
+        "amount_cents": s["amount_cents"],
+        "reservation_hours": s["reservation_hours"],
+        "event_code": s["event_code"],
+    }
+
+
+def reserved_until(row) -> str | None:
+    hours = settings()["reservation_hours"]
+    if row["paid"] or not row["seat"] or not row["reserved_at"] or hours <= 0:
+        return None
+    return utc_iso(datetime.fromisoformat(row["reserved_at"]) + timedelta(hours=hours))
+
+
+def user_dict(row, with_email=True) -> dict:
+    data = {
+        "id": row["id"],
+        "name": row["name"],
+        "seat": row["seat"],
+        "paid": bool(row["paid"]),
+        "created_at": row["created_at"],
+        "seat_selected_at": row["seat_selected_at"],
+        "paid_at": row["paid_at"],
+        "paid_amount_cents": row["paid_amount_cents"],
+        "reserved_until": reserved_until(row),
+    }
+    if with_email:
+        data["email"] = row["email"]
+    return data
+
+
+def payment_info(user_row) -> dict:
+    s = settings()
+    return {
+        "paypal_address": s["paypal_address"],
+        "amount_cents": s["amount_cents"],
+        "reference": f"{s['event_name']} - Seat {user_row['seat']} - {user_row['name']}",
+        "reserved_until": reserved_until(user_row),
+    }
+
+
+def user_summary(row) -> dict:
+    """Identifying fields for audit entries."""
+    return {"user_id": row["id"], "name": row["name"], "email": row["email"], "seat": row["seat"]}
+
+
+# --- participants --------------------------------------------------------
+
+def issue_token(user_id: int) -> str:
+    token = sec.new_secret()
+    db = get_db()
+    db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)", (sec.sha256(token), user_id))
+    db.commit()
+    return token
+
+
+def current_user():
+    token = request.headers.get("X-User-Token", "")
+    if not token:
+        return None
+    return get_db().execute(
+        "SELECT users.* FROM user_tokens JOIN users ON users.id = user_tokens.user_id "
+        "WHERE user_tokens.token_hash = ?",
+        (sec.sha256(token),),
+    ).fetchone()
+
+
+def require_user():
+    user = current_user()
+    if user is None:
+        raise ApiError(401, "Please register or log in first.")
+    return user
+
+
+def get_user(user_id: int):
+    row = get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if row is None:
+        raise ApiError(404, "User not found.")
+    return row
+
+
+PAID_LOCKED = "Your payment is already confirmed. Ask an admin to change your seat."
+
+
+def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> None:
+    """Assign (or clear, if seat_value is None) a seat for a user.
+
+    Runs as one write transaction: the paid state, the layout, the per-IP
+    pending limit and the seat itself are all read and changed under the same
+    lock, so concurrent payment confirmations, layout saves or reservations
+    cannot interleave. ``by_participant`` applies the participant rules (paid
+    seats are locked, new reservations count against the per-IP limit).
+
+    The unpaid reservation window starts with the first seat pick and is *not*
+    reset by switching seats or by releasing and re-picking within the window.
+    """
+    ip_key = sec.ip_hash() if by_participant else None  # may write; keep outside the transaction
+    hours = settings()["reservation_hours"]
+    window = f"-{hours} hours" if hours > 0 else "-1000 years"
+    with write_transaction() as db:
+        user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            raise ApiError(404, "User not found.")
+        if by_participant and user["paid"]:
+            raise ApiError(409, PAID_LOCKED)
+        if seat_value is None:
+            db.execute("UPDATE users SET seat = NULL, seat_selected_at = NULL WHERE id = ?", (user_id,))
+            return
+        seat = lay.normalize_seat(seat_value)
+        if seat is None or seat not in set(lay.seat_ids(lay.load())):
+            raise ApiError(400, "This seat does not exist.")
+        if by_participant and user["seat"] is None:  # new reservation (switching does not count)
+            pending = db.execute(
+                "SELECT COUNT(*) FROM users WHERE paid = 0 AND seat IS NOT NULL AND reserved_ip_hash = ?",
+                (ip_key,),
+            ).fetchone()[0]
+            if pending >= conf("MAX_PENDING_PER_IP"):
+                raise ApiError(429, "Too many unpaid reservations from your network. "
+                                    "Please wait until earlier reservations are paid or released.")
+        else:
+            ip_key = None  # keep the IP of the original reservation
+        try:
+            db.execute(
+                "UPDATE users SET seat = ?, seat_selected_at = datetime('now'), "
+                "reserved_at = CASE WHEN reserved_at IS NULL OR reserved_at <= datetime('now', ?) "
+                "                   THEN datetime('now') ELSE reserved_at END, "
+                "reserved_ip_hash = COALESCE(?, reserved_ip_hash) "
+                "WHERE id = ?",
+                (seat, window, ip_key, user_id),
+            )
+        except sqlite3.IntegrityError:
+            raise ApiError(409, f"Seat {seat} is already taken.") from None
+
+
+@bp.get("/info")
+def info():
+    data = public_settings(settings())
+    data.pop("event_code")
+    data["registration_open"] = registration_open()
+    data["seat_count"] = len(lay.seat_ids(lay.load()))
+    return jsonify(data)
+
+
+@bp.get("/seats")
+def seats():
+    # Layout, occupants and the participant must come from the same state: a
+    # layout save renames seats, and mixing old layout with new seat ids would
+    # show occupied seats as free or people in the wrong group. The checks below
+    # write (rate limits, session refresh), so they run after the snapshot.
+    with read_snapshot() as db:
+        layout = lay.load()
+        rows = db.execute("SELECT seat, name, paid FROM users WHERE seat IS NOT NULL").fetchall()
+        me = current_user()
+    taken = {r["seat"]: r for r in rows}
+    # Having a valid registration code and being allowed to see names are
+    # different things: admins see names but still need the code to register.
+    header = request.headers.get("X-Event-Code")
+    code_ok = me is None and bool(header) and check_event_code(header, raise_when_limited=False)
+    show_names = me is not None or code_ok or is_admin_request()
+    result = []
+    for seat in lay.seat_ids(layout):
+        occupant = taken.get(seat)
+        if occupant is None:
+            result.append({"id": seat, "status": "free"})
+        else:
+            entry = {
+                "id": seat,
+                "status": "paid" if occupant["paid"] else "reserved",
+                "mine": me is not None and me["seat"] == seat,
+            }
+            if show_names:
+                entry["name"] = occupant["name"]
+            result.append(entry)
+    return jsonify(layout=layout, seats=result, names_visible=show_names, event_code_ok=code_ok)
+
+
+@bp.post("/event-code")
+def verify_event_code():
+    """Check the event code (to unlock names on the seat plan before registering)."""
+    if not registration_open():
+        raise ApiError(403, "Registration hasn't opened yet.")
+    if not check_event_code(json_body().get("code"), raise_when_limited=True):
+        raise ApiError(400, "Wrong event code.")
+    return jsonify(ok=True)
+
+
+@bp.post("/register")
+def register():
+    data = json_body()
+    key = sec.ip_hash()
+    enforce_limit("register", key, conf("REGISTER_MAX_PER_IP"), 3600,
+                  "Too many registrations from your network.")
+    if not registration_open():
+        raise ApiError(403, "Registration hasn't opened yet.")
+    if not check_event_code(data.get("event_code"), raise_when_limited=True):
+        raise ApiError(403, "Please enter the correct event code to register.")
+
+    name = str(data.get("name") or "").strip()
+    email = str(data.get("email") or "").strip().lower()
+    if not 2 <= len(name) <= 60:
+        raise ApiError(400, "Name must be between 2 and 60 characters.")
+    if len(email) > 200 or not EMAIL_RE.match(email):
+        raise ApiError(400, "Please enter a valid email address.")
+    token = sec.new_secret()
+    db = get_db()
+    try:
+        cur = db.execute(
+            "INSERT INTO users (name, email, token_hash) VALUES (?, ?, ?)",
+            (name, email, sec.sha256(token)),
+        )
+        db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)",
+                   (sec.sha256(token), cur.lastrowid))
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.rollback()
+        raise ApiError(
+            409, "This email address is already registered. Open a login link from a device "
+                 "where you are logged in, or ask an admin for one."
+        ) from None
+    return jsonify(token=token, user=user_dict(get_user(cur.lastrowid))), 201
+
+
+@bp.get("/me")
+def me():
+    user = require_user()
+    return jsonify(user=user_dict(user), payment=payment_info(user) if user["seat"] else None)
+
+
+@bp.post("/me/seat")
+def choose_seat():
+    user = require_user()
+    seat = json_body().get("seat")
+    if seat is None:
+        raise ApiError(400, "This seat does not exist.")
+    assign_seat(user["id"], seat, by_participant=True)
+    user = get_user(user["id"])
+    return jsonify(user=user_dict(user), payment=payment_info(user))
+
+
+@bp.delete("/me/seat")
+def release_seat():
+    user = require_user()
+    assign_seat(user["id"], None, by_participant=True)
+    return jsonify(user=user_dict(get_user(user["id"])))
+
+
+# --- one-time login links ------------------------------------------------
+
+def create_login_code(user_id: int) -> tuple[str, str]:
+    code = sec.new_secret()
+    now = time.time()
+    expires = now + conf("LOGIN_CODE_HOURS") * 3600
+    db = get_db()
+    db.execute("DELETE FROM login_codes WHERE expires_at < ?", (now,))
+    db.execute("INSERT INTO login_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)",
+               (sec.sha256(code), user_id, expires))
+    db.commit()
+    return code, utc_iso(datetime.fromtimestamp(expires, timezone.utc).replace(tzinfo=None))
+
+
+def lookup_login_code(code) :
+    if not isinstance(code, str) or not 10 <= len(code) <= 100:
+        return None
+    return get_db().execute(
+        "SELECT users.*, login_codes.code_hash FROM login_codes "
+        "JOIN users ON users.id = login_codes.user_id "
+        "WHERE login_codes.code_hash = ? AND login_codes.expires_at >= ?",
+        (sec.sha256(code), time.time()),
+    ).fetchone()
+
+
+def _login_code_attempt():
+    key = sec.ip_hash()
+    enforce_limit("login_code", key, conf("LOGIN_CODE_MAX_PER_IP"), 900, "Too many login attempts.")
+
+
+@bp.post("/me/login-link")
+def my_login_link():
+    user = require_user()
+    enforce_limit("login_link", str(user["id"]), 10, 3600, "Too many login links requested.")
+    code, expires = create_login_code(user["id"])
+    return jsonify(code=code, expires_at=expires)
+
+
+@bp.post("/login/preview")
+def login_preview():
+    """Tell the browser whose account a login code belongs to, without using it up."""
+    _login_code_attempt()
+    row = lookup_login_code(json_body().get("code"))
+    if row is None:
+        raise ApiError(400, "This login link is invalid, expired or has already been used.")
+    return jsonify(user_id=row["id"], name=row["name"])
+
+
+@bp.post("/login")
+def login_with_code():
+    _login_code_attempt()
+    row = lookup_login_code(json_body().get("code"))
+    if row is None:
+        raise ApiError(400, "This login link is invalid, expired or has already been used.")
+    db = get_db()
+    deleted = db.execute("DELETE FROM login_codes WHERE code_hash = ?", (row["code_hash"],)).rowcount
+    db.commit()
+    if not deleted:  # used concurrently
+        raise ApiError(400, "This login link has already been used.")
+    token = issue_token(row["id"])
+    return jsonify(token=token, user=user_dict(get_user(row["id"])))
+
+
+# --- admin ---------------------------------------------------------------
+
+def admin_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not conf("ADMIN_PASSWORD"):
+            raise ApiError(401, "Admin login required.")
+        session = sec.current_admin_session()
+        if session is None:
+            raise ApiError(401, "Admin login required.")
+        g.admin = session
+        return view(*args, **kwargs)
+    return wrapper
+
+
+def actor() -> str:
+    return g.admin["actor"]
+
+
+def clean_actor_name(value) -> str:
+    text = "".join(ch for ch in str(value or "") if unicodedata.category(ch)[0] != "C").strip()
+    return text[:40] or "admin"
+
+
+@bp.post("/admin/login")
+def admin_login():
+    expected = conf("ADMIN_PASSWORD")
+    if not expected:
+        raise ApiError(503, "Admin login is disabled: ADMIN_PASSWORD is not set.")
+    data = json_body()
+    ip = sec.client_ip()
+    key = sec.ip_hash(ip)
+    window = conf("ADMIN_LOGIN_WINDOW_MINUTES") * 60
+    # Reserve an attempt in both buckets before checking the password (atomic, so
+    # parallel guesses cannot exceed the limits); a successful login gives them back.
+    wait, ip_attempt = sec.consume("admin_login_fail", key, conf("ADMIN_LOGIN_MAX_PER_IP"), window)
+    global_attempt = None
+    if not wait:
+        wait, global_attempt = sec.consume("admin_login_fail", "*", conf("ADMIN_LOGIN_MAX_GLOBAL"), window)
+        if wait:
+            sec.release(ip_attempt)
+    if wait:
+        raise ApiError(429, f"Too many failed logins. Please try again in {human_wait(wait)}.",
+                       retry_after=wait)
+    name = clean_actor_name(data.get("name"))
+    password = str(data.get("password") or "")
+    if not hmac.compare_digest(password.encode(), expected.encode()):
+        sec.audit("anonymous", "admin.login_failed", ip=ip, name=name)
+        raise ApiError(401, "Wrong password.")
+    sec.release(ip_attempt)
+    sec.release(global_attempt)
+    token = sec.create_admin_session(name)
+    sec.audit(name, "admin.login", ip=ip)
+    resp = jsonify(ok=True, actor=name)
+    sec.set_admin_cookie(resp, token)
+    return resp
+
+
+@bp.post("/admin/logout")
+def admin_logout():
+    session = sec.current_admin_session() if conf("ADMIN_PASSWORD") else None
+    if session is not None:
+        sec.end_admin_session()
+        sec.audit(session["actor"], "admin.logout")
+    resp = jsonify(ok=True)
+    sec.set_admin_cookie(resp, None)
+    return resp
+
+
+@bp.post("/admin/logout-all")
+@admin_required
+def admin_logout_all():
+    count = sec.end_all_admin_sessions()
+    sec.audit(actor(), "admin.logout_all", sessions=count)
+    resp = jsonify(ok=True, sessions=count)
+    sec.set_admin_cookie(resp, None)
+    return resp
+
+
+@bp.get("/admin/session")
+def admin_session():
+    session = sec.current_admin_session() if conf("ADMIN_PASSWORD") else None
+    return jsonify(admin=session is not None, actor=session["actor"] if session else None)
+
+
+@bp.get("/admin/audit")
+@admin_required
+def admin_audit():
+    return jsonify(entries=sec.audit_entries())
+
+
+@bp.get("/admin/users")
+@admin_required
+def admin_users():
+    rows = get_db().execute("SELECT * FROM users ORDER BY created_at, id").fetchall()
+    return jsonify(users=[user_dict(r) for r in rows])
+
+
+@bp.post("/admin/users/<int:user_id>/paid")
+@admin_required
+def admin_set_paid(user_id):
+    user = get_user(user_id)
+    paid = json_body().get("paid")
+    if not isinstance(paid, bool):
+        raise ApiError(400, "'paid' must be true or false.")
+    db = get_db()
+    # The confirmed amount is stored with the payment, so later fee changes don't
+    # rewrite what was actually received. Revoking a payment starts a fresh
+    # reservation window. Only a real state change is applied (and audited).
+    changed = db.execute(
+        "UPDATE users SET paid = ?, paid_at = CASE WHEN ? THEN datetime('now') END, "
+        "paid_amount_cents = CASE WHEN ? THEN ? END, "
+        "reserved_at = CASE WHEN ? THEN reserved_at "
+        "                   WHEN seat IS NOT NULL THEN datetime('now') END "
+        "WHERE id = ? AND paid != ?",
+        (int(paid), int(paid), int(paid), settings()["amount_cents"], int(paid), user_id, int(paid)),
+    ).rowcount
+    db.commit()
+    if changed:
+        sec.audit(actor(), "payment.confirmed" if paid else "payment.revoked", **user_summary(user))
+    return jsonify(user=user_dict(get_user(user_id)))
+
+
+@bp.post("/admin/users/<int:user_id>/move")
+@admin_required
+def admin_move(user_id):
+    user = get_user(user_id)
+    data = json_body()
+    if "seat" not in data:
+        raise ApiError(400, "'seat' is required (use null to free the seat).")
+    assign_seat(user_id, data["seat"])
+    updated = get_user(user_id)
+    if updated["seat"] != user["seat"]:
+        sec.audit(actor(), "user.moved", **user_summary(user), to=updated["seat"])
+    return jsonify(user=user_dict(updated))
+
+
+@bp.post("/admin/users/<int:user_id>/login-link")
+@admin_required
+def admin_login_link(user_id):
+    user = get_user(user_id)
+    code, expires = create_login_code(user_id)
+    sec.audit(actor(), "user.login_link_created", **user_summary(user))
+    return jsonify(code=code, expires_at=expires)
+
+
+@bp.delete("/admin/users/<int:user_id>")
+@admin_required
+def admin_remove(user_id):
+    user = get_user(user_id)
+    db = get_db()
+    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    db.commit()
+    sec.audit(actor(), "user.removed", **user_summary(user), paid=bool(user["paid"]))
+    return jsonify(ok=True)
+
+
+@bp.get("/admin/settings")
+@admin_required
+def admin_get_settings():
+    return jsonify(public_settings(settings()))
+
+
+@bp.put("/admin/settings")
+@admin_required
+def admin_put_settings():
+    data = json_body()
+    # Validation reads stored values (e.g. the start date when only the end
+    # changes); hold the write lock from that read until the save.
+    with write_transaction():
+        before = cfg.load()
+        cfg.save(cfg.validate_update(data))
+        after = cfg.load()
+    g.pop("settings", None)
+    changes = {}
+    for key, old in before.items():
+        new = after[key]
+        if old != new:
+            changes[key] = "(changed)" if key == "description" else [old, new]
+    if changes:
+        sec.audit(actor(), "settings.changed", **changes)
+    return jsonify(public_settings(after))
+
+
+@bp.get("/admin/layout")
+@admin_required
+def admin_get_layout():
+    return jsonify(lay.load())
+
+
+@bp.put("/admin/layout")
+@admin_required
+def admin_put_layout():
+    new = lay.validate(json_body())
+    # Read the current layout and occupants and save under one write lock, so no
+    # seat can be reserved in between (participants' seat changes use the same lock).
+    with write_transaction() as db:
+        occupants = db.execute(
+            "SELECT seat, name FROM users WHERE seat IS NOT NULL ORDER BY seat"
+        ).fetchall()
+        moves, lost = lay.plan_seat_moves(lay.load(), new, [r["seat"] for r in occupants])
+        if lost:
+            who = ", ".join(f"{r['seat']} ({r['name']})" for r in occupants if r["seat"] in lost)
+            raise ApiError(
+                409, f"This layout would remove occupied seats: {who}. Move those people first."
+            )
+        lay.save(new, moves)
+    sec.audit(actor(), "layout.saved", groups=len(new["groups"]), items=len(new["items"]),
+              seats=len(lay.seat_ids(new)), renumbered=moves)
+    return jsonify(layout=lay.load(), moved=moves)
