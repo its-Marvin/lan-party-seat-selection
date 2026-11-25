@@ -148,7 +148,7 @@ On `/admin`, after logging in with `ADMIN_PASSWORD`:
 - **Remove** a person completely. This frees their seat, and their email can register again.
 - **Login link:** creates a one-time login link for someone who lost access. Send it only to
   that person's email address.
-- The summary line shows how many people registered, seats taken, seats paid, and money received and outstanding.
+- The summary line shows how many people registered, seats taken, seats paid, money received (the amounts actually confirmed, which a later fee change does not alter) and money outstanding (open reservations at the current fee).
 - **Seat layout editor** (see [Seat layout](#seat-layout)).
 - Settings form for the event, the payment and the reservation hold time.
 - **Audit log:** shows admin logins (including failed attempts with their IP), payment

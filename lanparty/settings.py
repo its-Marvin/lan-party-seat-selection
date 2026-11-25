@@ -130,10 +130,11 @@ def validate_update(data: dict) -> dict:
 
 
 def save(values: dict) -> None:
+    """Store validated values. Call inside ``db.write_transaction()`` together
+    with the ``validate_update()`` that produced them; this does not commit."""
     db = get_db()
     db.executemany(
         "INSERT INTO settings (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         list(values.items()),
     )
-    db.commit()

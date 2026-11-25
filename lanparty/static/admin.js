@@ -3,15 +3,28 @@
 const $ = (id) => document.getElementById(id);
 let settingsCache = null;
 
+/** Sign-in form shown while the admin area stays on screen (session expired mid-edit). */
+function requireLogin() {
+  $("login-card").hidden = false;
+  $("session-controls").hidden = true;
+  showMessage($("login-msg"), "Your session has expired. Please sign in again.", "info");
+  $("login-card").scrollIntoView({ behavior: "smooth" });
+  $("login-form").password.focus({ preventScroll: true });
+}
+
 async function checkSession() {
   const { admin, actor } = await api("GET", "/admin/session");
+  const keepDraft = window.LayoutEditor.isDirty();
   $("login-card").hidden = admin;
-  $("admin-area").hidden = !admin;
+  // an unsaved layout draft stays visible (and is not reloaded) until it is saved or discarded
+  $("admin-area").hidden = !admin && !keepDraft;
   $("session-controls").hidden = !admin;
   $("actor").textContent = actor ? `Logged in as ${actor}` : "";
+  if (!admin && keepDraft) requireLogin();
   if (admin) {
+    showMessage($("login-msg"), "");
     await loadSettings();
-    await window.LayoutEditor.load();
+    if (!keepDraft) await window.LayoutEditor.load();
     await loadUsers();
     await loadAudit();
   }
@@ -84,10 +97,12 @@ async function loadUsers() {
   const seated = users.filter((u) => u.seat);
   const paid = users.filter((u) => u.paid);
   const amount = settingsCache ? settingsCache.amount_cents : 0;
+  // received = amounts actually confirmed; outstanding = open reservations at the current fee
+  const received = paid.reduce((sum, u) => sum + (u.paid_amount_cents ?? 0), 0);
   $("stats").textContent =
     `${users.length} registered · ${seated.length}/${seatData.seats.length} seats taken · ` +
-    `${paid.length} paid` + (settingsCache ? ` · ${formatMoney(paid.length * amount)} received, ` +
-    `${formatMoney(seated.filter((u) => !u.paid).length * amount)} outstanding` : "");
+    `${paid.length} paid · ${formatMoney(received)} received` +
+    (settingsCache ? `, ${formatMoney(seated.filter((u) => !u.paid).length * amount)} outstanding` : "");
 }
 
 function seatOrder(a, b) {
@@ -173,6 +188,7 @@ async function onLogin(event) {
   }
 }
 
+document.addEventListener("admin-auth-required", () => checkSession().catch(requireLogin));
 document.addEventListener("layout-saved", () => loadUsers().then(loadAudit).catch(() => {}));
 
 document.addEventListener("DOMContentLoaded", () => {

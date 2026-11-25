@@ -190,6 +190,7 @@ def user_dict(row, with_email=True) -> dict:
         "created_at": row["created_at"],
         "seat_selected_at": row["seat_selected_at"],
         "paid_at": row["paid_at"],
+        "paid_amount_cents": row["paid_amount_cents"],
         "reserved_until": reserved_until(row),
     }
     if with_email:
@@ -576,16 +577,19 @@ def admin_set_paid(user_id):
     if not isinstance(paid, bool):
         raise ApiError(400, "'paid' must be true or false.")
     db = get_db()
-    # revoking a payment starts a fresh reservation window
-    db.execute(
+    # The confirmed amount is stored with the payment, so later fee changes don't
+    # rewrite what was actually received. Revoking a payment starts a fresh
+    # reservation window. Only a real state change is applied (and audited).
+    changed = db.execute(
         "UPDATE users SET paid = ?, paid_at = CASE WHEN ? THEN datetime('now') END, "
+        "paid_amount_cents = CASE WHEN ? THEN ? END, "
         "reserved_at = CASE WHEN ? THEN reserved_at "
         "                   WHEN seat IS NOT NULL THEN datetime('now') END "
-        "WHERE id = ?",
-        (int(paid), int(paid), int(paid), user_id),
-    )
+        "WHERE id = ? AND paid != ?",
+        (int(paid), int(paid), int(paid), settings()["amount_cents"], int(paid), user_id, int(paid)),
+    ).rowcount
     db.commit()
-    if bool(user["paid"]) != paid:
+    if changed:
         sec.audit(actor(), "payment.confirmed" if paid else "payment.revoked", **user_summary(user))
     return jsonify(user=user_dict(get_user(user_id)))
 
@@ -633,10 +637,14 @@ def admin_get_settings():
 @bp.put("/admin/settings")
 @admin_required
 def admin_put_settings():
-    before = cfg.load()
-    cfg.save(cfg.validate_update(json_body()))
+    data = json_body()
+    # Validation reads stored values (e.g. the start date when only the end
+    # changes); hold the write lock from that read until the save.
+    with write_transaction():
+        before = cfg.load()
+        cfg.save(cfg.validate_update(data))
+        after = cfg.load()
     g.pop("settings", None)
-    after = cfg.load()
     changes = {}
     for key, old in before.items():
         new = after[key]

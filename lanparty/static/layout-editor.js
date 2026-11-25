@@ -479,6 +479,13 @@ window.LayoutEditor = (() => {
       await load();
       showMessage(msg, "Layout saved." + (moved ? ` ${moved} participant(s) got new seat numbers.` : ""), "success");
     } catch (err) {
+      if (err.status === 401) {
+        // keep the draft; admin.js shows the sign-in form, then Save can be retried
+        showMessage(msg, "Your admin session has expired. Sign in again above – your unsaved " +
+          "layout is kept – then click Save layout again.");
+        document.dispatchEvent(new CustomEvent("admin-auth-required"));
+        return;
+      }
       showMessage(msg, err.message);
     }
   }

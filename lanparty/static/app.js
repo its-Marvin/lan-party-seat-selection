@@ -1,6 +1,8 @@
 "use strict";
 
 const state = { info: null, me: null, payment: null, namesVisible: false, codeOk: false };
+// fingerprints of what is currently on screen, so polling doesn't rebuild unchanged panels
+const rendered = { userId: undefined, me: null, seats: null };
 const $ = (id) => document.getElementById(id);
 
 /**
@@ -57,11 +59,27 @@ function renderInfo() {
   $("event-description").textContent = info.description;
 }
 
+/** Forget a generated login link – it belongs to the account that created it. */
+function resetLoginLinkBox() {
+  $("login-link").value = "";
+  $("login-link-expiry").textContent = "";
+  $("login-link-result").hidden = true;
+}
+
 function renderMe() {
   const me = state.me;
+  const userId = me ? me.id : null;
+  if (userId !== rendered.userId) {
+    resetLoginLinkBox();
+    rendered.userId = userId;
+  }
   $("me-card").hidden = !me;
   renderAccess();
+  const fingerprint = JSON.stringify(me);
+  if (fingerprint === rendered.me) return;
+  rendered.me = fingerprint;
   if (!me) return;
+  const restoreFocus = keepFocus($("me-details"));
 
   const details = $("me-details");
   details.replaceChildren(
@@ -81,11 +99,34 @@ function renderMe() {
     }
     if (!me.paid) {
       details.append(el("p", {},
-        el("button", { type: "button", onclick: () => openPayDialog() }, "Show payment details"), " ",
-        el("button", { type: "button", class: "danger", onclick: releaseSeat }, "Release seat"),
+        el("button", { type: "button", dataset: { focusKey: "pay" }, onclick: () => openPayDialog() },
+          "Show payment details"), " ",
+        el("button", { type: "button", class: "danger", dataset: { focusKey: "release" }, onclick: releaseSeat },
+          "Release seat"),
       ));
     }
   }
+  restoreFocus();
+}
+
+/**
+ * Call before replacing the contents of `container`; the returned function puts
+ * keyboard focus back on the control with the same data-focus-key afterwards,
+ * or on the container itself if that control no longer exists.
+ */
+function keepFocus(container) {
+  const active = document.activeElement;
+  if (!active || active === document.body || !container.contains(active)) return () => {};
+  const key = active.dataset.focusKey;
+  return () => {
+    const target = key && container.querySelector(`[data-focus-key="${CSS.escape(key)}"]`);
+    if (target && !target.disabled) {
+      target.focus({ preventScroll: true });
+    } else {
+      container.tabIndex = -1;
+      container.focus({ preventScroll: true });
+    }
+  };
 }
 
 /** Show the event-code card or the registration form, depending on what the visitor has unlocked. */
@@ -112,8 +153,12 @@ async function loadSeats() {
     showMessage($("code-msg"), "The event code has changed. Please enter the new one.");
   }
   renderAccess();
-  const byId = new Map(data.seats.map((s) => [s.id, s]));
   const canPickFree = !state.me || !state.me.paid;
+  const fingerprint = JSON.stringify([data.layout, data.seats, canPickFree]);
+  if (fingerprint === rendered.seats) return;
+  rendered.seats = fingerprint;
+  const restoreFocus = keepFocus($("seat-map"));
+  const byId = new Map(data.seats.map((s) => [s.id, s]));
   const area = buildArea(data.layout, {
     renderSeat(pos) {
       const seat = byId.get(pos.id);
@@ -126,6 +171,7 @@ async function loadSeats() {
         title,
         "aria-label": title,
         disabled: seat.status === "free" && !canPickFree,
+        dataset: { focusKey: seat.id },
         onclick: () => onSeatClick(seat),
       }, seat.id);
     },
@@ -134,6 +180,7 @@ async function loadSeats() {
   if (!data.layout.groups.length) {
     $("seat-map").replaceChildren(el("p", { class: "muted" }, "The seat plan has not been published yet."));
   }
+  restoreFocus();
   const taken = data.seats.filter((s) => s.status !== "free").length;
   const paid = data.seats.filter((s) => s.status === "paid").length;
   $("seat-stats").textContent =

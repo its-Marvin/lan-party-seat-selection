@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     seat_selected_at TEXT,
     paid_at          TEXT,
+    paid_amount_cents INTEGER,               -- amount confirmed with the payment
     reserved_at      TEXT,                   -- start of the unpaid reservation window
     reserved_ip_hash TEXT                    -- keyed hash of the IP that reserved the seat
 );
@@ -100,20 +101,42 @@ def close_db(_exc=None) -> None:
 
 
 def _migrate(db: sqlite3.Connection) -> None:
-    """Bring databases created by older versions up to date."""
-    columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
-    if "reserved_at" not in columns:
-        db.execute("ALTER TABLE users ADD COLUMN reserved_at TEXT")
+    """Bring databases created by older versions up to date.
+
+    Several workers may start at once: the write lock is taken before the
+    schema is inspected, so a worker that waited sees the migrated schema.
+    """
+    from .settings import DEFAULTS
+
+    if db.in_transaction:
+        db.commit()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+        if "reserved_at" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN reserved_at TEXT")
+            db.execute(
+                "UPDATE users SET reserved_at = seat_selected_at WHERE seat IS NOT NULL AND paid = 0"
+            )
+        if "reserved_ip_hash" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN reserved_ip_hash TEXT")
+        if "paid_amount_cents" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN paid_amount_cents INTEGER")
+            # best guess for payments confirmed before amounts were stored
+            db.execute(
+                "UPDATE users SET paid_amount_cents = COALESCE("
+                "  (SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'amount_cents'), ?) "
+                "WHERE paid = 1",
+                (int(DEFAULTS["amount_cents"]),),
+            )
+        # every user's original device token keeps working
         db.execute(
-            "UPDATE users SET reserved_at = seat_selected_at WHERE seat IS NOT NULL AND paid = 0"
+            "INSERT OR IGNORE INTO user_tokens (token_hash, user_id, created_at) "
+            "SELECT token_hash, id, created_at FROM users"
         )
-    if "reserved_ip_hash" not in columns:
-        db.execute("ALTER TABLE users ADD COLUMN reserved_ip_hash TEXT")
-    # every user's original device token keeps working
-    db.execute(
-        "INSERT OR IGNORE INTO user_tokens (token_hash, user_id, created_at) "
-        "SELECT token_hash, id, created_at FROM users"
-    )
+    except BaseException:
+        db.rollback()
+        raise
     db.commit()
 
 
