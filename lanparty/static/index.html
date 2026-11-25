@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Party – Seat Registration</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/common.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <h1 id="event-name">LAN Party</h1>
+      <ul class="facts" id="event-facts"></ul>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card" id="about" hidden>
+      <h2>About the event</h2>
+      <p id="event-description" class="prewrap"></p>
+    </section>
+
+    <section class="card" id="closed-card" hidden>
+      <h2>Registration hasn't opened yet</h2>
+      <p class="muted">Check back later. You'll get the event code with your invitation.</p>
+    </section>
+
+    <section class="card" id="code-card" hidden>
+      <h2>Enter the event code</h2>
+      <p class="muted">
+        You got the event code with your invitation. It shows who sits where, so you can sit
+        next to your friends, and you need it to register.
+      </p>
+      <form id="code-form" class="form-row">
+        <label>Event code
+          <input name="code" class="code-input" required minlength="4" maxlength="6" pattern="[A-Za-z0-9]{4,6}"
+                 autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
+        <button type="submit" class="primary">Unlock</button>
+      </form>
+      <p id="code-msg" class="message"></p>
+    </section>
+
+    <section class="card" id="register-card" hidden>
+      <h2>Register</h2>
+      <p class="muted">Register with your name and email, then pick a seat below.</p>
+      <form id="register-form" class="form-row">
+        <label>Name <input name="name" required minlength="2" maxlength="60" autocomplete="nickname"></label>
+        <label>Email <input name="email" type="email" required maxlength="200" autocomplete="email"></label>
+        <button type="submit" class="primary">Register</button>
+      </form>
+      <p id="register-msg" class="message"></p>
+    </section>
+
+    <section class="card" id="me-card" hidden>
+      <h2>Your registration</h2>
+      <div id="me-details"></div>
+      <div class="login-link-box">
+        <p class="muted small">
+          Want to check your seat on another device (or keep a way back in)?
+          Create a one-time login link – it works once and expires after 24 hours.
+        </p>
+        <button type="button" id="create-login-link">Create login link</button>
+        <div id="login-link-result" hidden>
+          <div class="copy-row">
+            <input id="login-link" readonly aria-label="One-time login link">
+            <button type="button" id="copy-login-link">Copy</button>
+          </div>
+          <p class="muted small" id="login-link-expiry"></p>
+        </div>
+      </div>
+      <p id="me-msg" class="message"></p>
+    </section>
+
+    <section class="card">
+      <h2 id="seat-heading">Choose your seat</h2>
+      <div class="legend">
+        <span><i class="seat-dot free"></i>free</span>
+        <span><i class="seat-dot reserved"></i>reserved (payment pending)</span>
+        <span><i class="seat-dot paid"></i>paid</span>
+        <span><i class="seat-dot mine"></i>your seat</span>
+      </div>
+      <p id="names-hint" class="muted small" hidden></p>
+      <div id="seat-map" class="seat-map" aria-label="Seat map"></div>
+      <p id="seat-msg" class="message"></p>
+      <p class="muted small" id="seat-stats"></p>
+    </section>
+  </main>
+
+  <footer class="wrap muted small"><a href="/admin">Admin</a></footer>
+
+  <dialog id="pay-dialog">
+    <form method="dialog">
+      <h2>Seat <span id="pay-seat"></span> reserved!</h2>
+      <p>To confirm your seat, please send</p>
+      <p class="big" id="pay-amount"></p>
+      <p>via PayPal (friends &amp; family) to</p>
+      <p class="big mono" id="pay-address"></p>
+      <p class="muted">Payment reference:</p>
+      <p class="mono" id="pay-ref"></p>
+      <p class="small" id="pay-deadline"></p>
+      <p class="muted small">An admin will mark your seat as paid once the money arrives.</p>
+      <div class="actions">
+        <button type="button" id="copy-address">Copy address</button>
+        <button value="ok" class="primary">OK</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

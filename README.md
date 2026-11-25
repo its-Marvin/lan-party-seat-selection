@@ -1,0 +1,281 @@
+# LAN Party Seat Selection
+
+A small web app for LAN party seat registration.
+
+- **Participants** sign up with their name and email, then pick a seat on the seat map.
+  Once they pick a seat, a popup tells them how much to pay and which PayPal address to send it to.
+- **Admins** confirm payments, move people to other seats, and remove people. They also
+  set the PayPal address, the amount due and the event details, and they arrange the
+  **seat layout**: groups of two-person tables that they drag into place on a plan of the event area,
+  together with doors, windows, the sleeping area and food & drinks.
+- The public page shows the event's name, date, location, fee and description.
+
+Stack: Python 3.11+ with Flask, SQLite (Python's built-in `sqlite3`), and plain HTML/CSS/JS
+with no build step.
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+
+export ADMIN_PASSWORD='choose-a-strong-password'   # at least 12 characters
+.venv/bin/python -m lanparty
+```
+
+Open <http://127.0.0.1:5000> for the public page and <http://127.0.0.1:5000/admin> for the admin area.
+To get started, log in as admin, fill in the event details, the PayPal address and the amount,
+arrange the seat layout, and **set an event code**. Until there is a code, registration is closed.
+
+## Configuration
+
+All configuration is done with environment variables:
+
+| Variable                | Default                      | Purpose |
+|-------------------------|------------------------------|---------|
+| `ADMIN_PASSWORD`        | *(empty → admin disabled)*   | Password for `/admin`. Must be at least 12 characters, or the app refuses to start. Changing it logs out all admins. |
+| `ALLOW_WEAK_ADMIN_PASSWORD` | `0`                      | `1` allows a shorter password. **Local development only.** |
+| `DATABASE`              | `instance/lanparty.sqlite3`  | Path to the SQLite file. It is created automatically. |
+| `HOST` / `PORT`         | `127.0.0.1` / `5000`         | Address for the development server (`python -m lanparty`). |
+| `SESSION_COOKIE_SECURE` | `0`                          | Set this to `1` when you serve the app over HTTPS. The admin cookie is then only sent over HTTPS. |
+| `TRUSTED_PROXIES`       | `0`                          | Number of reverse proxies in front of the app. Needed so that rate limits see the real client IP (see [Deployment](#deployment-notes)). |
+| `MAX_CONTENT_LENGTH`    | `262144` (256 KB)            | Maximum request size in bytes. |
+| `ADMIN_LOGIN_MAX_PER_IP` / `ADMIN_LOGIN_MAX_GLOBAL` | `5` / `50` | Failed admin logins allowed per IP / in total, per `ADMIN_LOGIN_WINDOW_MINUTES` (`15`). |
+| `REGISTER_MAX_PER_IP`   | `10`                         | Registrations per IP per hour. Failed attempts count too. |
+| `MAX_PENDING_PER_IP`    | `4`                          | Unpaid seat reservations made from one IP at the same time. |
+| `LOGIN_CODE_MAX_PER_IP` | `20`                         | Login link attempts per IP per 15 minutes. |
+| `EVENT_CODE_MAX_PER_IP` | `10`                         | Wrong event codes per IP per 15 minutes. |
+| `LOGIN_CODE_HOURS`      | `24`                         | How long a one-time login link stays valid. |
+| `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `60` / `12` | An admin session ends after this much inactivity, or after this total time at the latest. |
+
+You don't need a `SECRET_KEY`: admin sessions are stored in the database, not in signed cookies.
+
+Admins change everything else in the admin UI:
+
+- event name, start and end, location, description
+- PayPal address (an email address or a `paypal.me/...` link) and the amount due in €
+- how long unpaid reservations are held (default 48 hours; 0 = forever)
+- the **event code** (see below)
+- the seat layout (see below)
+
+## Event code
+
+The event code is 4–6 letters or digits that you share with your guests, for example in the
+invitation. **The app is secure by default: until an admin sets a code, registration is
+closed and visitors see no names.** The admin page shows a warning banner while no code is set. *Generate* in the admin settings creates a random one without easily confused
+characters (0/O, 1/I).
+
+- **Without the code**, visitors see the seat plan, including which seats are free, reserved and
+  paid, but **not who sits where**, and they **can't register**.
+- **After entering the code** they see the names, so friends can find each other and sit
+  together. This works before registering. The code is stored in the browser.
+- Registered participants and admins always see the names.
+- **Changing the code** locks out visitors who only had the old code. They are asked for the new
+  one. People who are already registered aren't affected.
+- **Removing the code** closes registration again. Codes visitors entered earlier stop working,
+  and only participants and admins see names.
+- Case doesn't matter.
+
+Wrong codes are rate-limited: after 10 wrong attempts from one IP within 15 minutes, no codes
+from that IP are checked at all, whether entered on the page, sent with the seat plan request or at
+registration. Since the code is shared with every guest, treat it as a barrier against spam and
+curious strangers, not as a password. Use 6 characters.
+
+## Seat layout
+
+The layout editor in the admin area shows the event area as a grid. One grid square is the width
+of one seat.
+
+- **Tables** always seat two people. A horizontal table is 2 × 1 squares.
+- **Groups** are blocks of tables. Each group has:
+  - a **label** of 1–3 letters (`A`, `B`, `VIP`, …), which seat numbers start with
+  - an optional **name**, e.g. "Clan corner", shown next to the label
+  - the **number of tables**, and how many **tables per row** (e.g. 8 tables, 4 per row
+    = two rows of four tables facing each other)
+  - an **orientation**: horizontal (rows run left → right) or vertical (the same block turned
+    sideways)
+  - a **position** on the area
+- Seats are numbered per group, left to right and row by row: table 1 has `A1`/`A2`, table 2 has `A3`/`A4`, and so on.
+- To arrange groups, **drag** them, or select one and use the **arrow keys**. The X/Y fields
+  in the side panel work too. *Add group* puts a new group in the next free spot,
+  *Duplicate* copies the selected group next to it, and *Delete* (or the Del key) removes it.
+- **Area elements** mark everything on the plan that isn't a table:
+  🚪 door, 🪟 window, 🛏️ sleeping area, 🍕 food & drinks, and 📍 other (stage, toilets, …).
+  Each has an optional label, e.g. "Bar & Pizza" or "Emergency exit". Add them with the buttons above
+  the plan, drag them into place, and resize them with the handle in their bottom-right corner
+  (or Shift + arrow keys, or the width/height fields). Elements may overlap each other, for example
+  a window at the edge of the sleeping area, but not a table group.
+- The area width and height are in grid squares (4–200 each). The editor warns
+  you about groups that overlap or stick out of the area. Nothing changes until you
+  click **Save layout**, and *Discard changes* goes back to the saved version.
+
+When you save, the server checks the layout again and protects seats that are already taken:
+
+- If you **change a group's label**, the people sitting in that group stay put and get new
+  seat numbers (`A3` → `C3`). Swapping two labels works as well.
+- Moving or rotating a group, or resizing the area, never affects anyone's seat.
+- If the new layout **would remove an occupied seat** (fewer tables, or a deleted group), the save is
+  refused and the message names the people affected. Move them first.
+
+Limits: at most 60 groups, 60 tables per group, 1000 seats in total and 100 area elements.
+
+## How it works
+
+### Participants
+1. Register with name and email. Each email address can only be registered once.
+2. The browser receives a random **device token** and keeps it in `localStorage`. The server
+   stores only a SHA-256 hash of it.
+3. Click a free seat → confirm → the payment popup shows the amount, the PayPal address, a
+   payment reference (`<event> - Seat <seat> - <name>`) and the **payment deadline**.
+4. Until an admin confirms the payment, the participant can switch seats or release their seat.
+   After the payment is confirmed, the seat is locked; only an admin can move them.
+5. **Unpaid reservations expire.** If the payment isn't confirmed within the configured time
+   (default 48 hours), the seat is released automatically. The time counts from the first
+   seat pick: switching seats, or releasing and picking again within that time, doesn't extend it.
+6. **Logging in on another device:** *Create login link* gives a one-time link (`/#login=…`).
+   It works once, expires after 24 hours, and gives that device its own token. The device the link
+   came from stays logged in. If a browser that is already logged in as someone else opens a link,
+   it asks before switching accounts. People who lost access can get a link from an admin.
+
+Seat colours: free, reserved (payment pending), paid, your seat. The public seat map shows
+the tables and groups exactly as the admin arranged them. Hovering over a seat (or clicking a taken
+one) shows who sits there. The map never shows email addresses, and it refreshes every 15 seconds.
+
+### Admins
+On `/admin`, after logging in with `ADMIN_PASSWORD`:
+- **Confirm payment** / **Mark unpaid**
+- **Move** a person to any free seat, or to "no seat" (they stay registered)
+- **Remove** a person completely. This frees their seat, and their email can register again.
+- **Login link:** creates a one-time login link for someone who lost access. Send it only to
+  that person's email address.
+- The summary line shows how many people registered, seats taken, seats paid, and money received and outstanding.
+- **Seat layout editor** (see [Seat layout](#seat-layout)).
+- Settings form for the event, the payment and the reservation hold time.
+- **Audit log:** shows admin logins (including failed attempts with their IP), payment
+  confirmations, moves, removals, login links, settings changes (the PayPal address and amount
+  are highlighted) and automatically released reservations. Admins enter their name when they
+  log in, so the log shows who did what even though everyone shares one password.
+- **Log out everywhere** ends all admin sessions, e.g. after a laptop was lost.
+
+## API
+
+All endpoints are under `/api` and use JSON.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET    | `/info` | – | Event and payment settings, plus `seat_count` and `registration_open` (never the code itself) |
+| GET    | `/seats` | – (token optional, marks `mine`) | `{layout, seats, names_visible}`. Occupant names are only included for code holders (`X-Event-Code` header), participants and admins. |
+| POST   | `/event-code` | – | `{code}` → checks the event code (rate-limited; 403 while no code is set) |
+| POST   | `/register` | – | `{name, email, event_code}` → `{token, user}` (rate-limited) |
+| GET    | `/me` | token | Current user and payment info (incl. `reserved_until`) |
+| POST   | `/me/seat` | token | `{seat: "B3"}` → reserve or change seat; returns payment info |
+| DELETE | `/me/seat` | token | Release your seat (only before payment is confirmed) |
+| POST   | `/me/login-link` | token | → `{code, expires_at}`: a one-time login code |
+| POST   | `/login/preview` | – | `{code}` → `{user_id, name}`; doesn't use up the code |
+| POST   | `/login` | – | `{code}` → `{token, user}`; uses up the code |
+| POST   | `/admin/login` | – | `{password, name?}` (rate-limited) |
+| POST   | `/admin/logout` | – | |
+| POST   | `/admin/logout-all` | admin | End every admin session |
+| GET    | `/admin/session` | – | `{admin: bool, actor}` |
+| GET    | `/admin/audit` | admin | Latest 200 audit log entries |
+| POST   | `/admin/users/<id>/login-link` | admin | One-time login code for that person |
+| GET    | `/admin/users` | admin | All registrations, including emails |
+| POST   | `/admin/users/<id>/paid` | admin | `{paid: true \| false}` |
+| POST   | `/admin/users/<id>/move` | admin | `{seat: "C4" \| null}` |
+| DELETE | `/admin/users/<id>` | admin | Remove the person |
+| GET/PUT| `/admin/settings` | admin | Read or update settings (partial updates allowed; `amount` in €) |
+| GET/PUT| `/admin/layout` | admin | Read or replace the seat layout; `PUT` returns `{layout, moved}` |
+
+Layout format:
+
+```json
+{
+  "area": {"width": 24, "height": 12},
+  "groups": [
+    {"id": "g-a", "label": "A", "name": "", "x": 2, "y": 2,
+     "tables": 8, "per_row": 4, "orientation": "horizontal"}
+  ],
+  "items": [
+    {"id": "i-1", "type": "door", "label": "Main entrance", "x": 0, "y": 5, "w": 1, "h": 2}
+  ]
+}
+```
+
+`type` is one of `door`, `window`, `sleeping`, `food`, `other`. You can leave out `items`.
+
+"token" means the `X-User-Token` header. "admin" means the `lp_admin` cookie set by `/admin/login`.
+Request bodies must be sent as `Content-Type: application/json`. Other content types get a 415 error,
+malformed JSON gets a 400 error, and requests over the size limit get a 413 error. When a rate limit
+is hit, the response is a 429 error with a `Retry-After` header.
+
+## Security
+
+What the app protects against, and how:
+
+| Threat | Protection |
+|--------|------------|
+| Guessing the admin password | At most 5 failed logins per IP and 50 overall per 15 minutes. While locked, even the right password is refused. Passwords under 12 characters are rejected at startup. |
+| Stolen or forged admin cookies | Sessions are stored in the database, behind a random `HttpOnly`, `SameSite=Strict` cookie with `Path=/api`. They end after 60 minutes of inactivity or 12 hours at most, on logout, with *Log out everywhere*, or when `ADMIN_PASSWORD` changes. |
+| Admin actions nobody can trace (e.g. a changed PayPal address) | The audit log records the admin's name for each action. |
+| One person reserving every seat | Registrations limited per IP, at most 4 unpaid reservations per IP, unpaid reservations expire. Registration requires the event code. |
+| Strangers seeing who attends | The seat plan shows names only to code holders, participants and admins. Guessing the code is rate-limited. Without a code (the default), nobody but participants and admins sees names. |
+| Login tokens leaking via URLs or logs | Personal links are one-time codes in the URL fragment (`#login=…`), which browsers never send to the server. Tokens and codes are stored only as SHA-256 hashes. |
+| Being tricked into using someone else's account | A login link asks before replacing an existing login. |
+| XSS / clickjacking | All user text is inserted with `textContent`. Strict CSP (`default-src 'self'`, no inline scripts, `object-src`/`base-uri 'none'`), `X-Frame-Options: DENY`. |
+| CSRF | The admin cookie is `SameSite=Strict`, and the API only accepts `application/json` bodies. Participant requests use a custom header. |
+| Oversized or malicious requests | 256 KB size limit. `NaN`/`Infinity` and deeply nested JSON are rejected with a 400 error. |
+| Caching of personal data | `Cache-Control: no-store` on all API responses. |
+| SQL injection | Only parameterised queries. |
+
+The rate-limit tables store keyed hashes of IP addresses, not the addresses themselves. The
+audit log does store the real IP of admin login attempts, because that's what you need to
+investigate an attack.
+
+Known limitations:
+- The app never checks that an email address is real. Someone can register with another
+  person's address (an admin can remove that registration), and the "already registered" message
+  reveals whether an address is in use (rate-limited).
+- The per-IP limits are best-effort: a determined attacker with many IP addresses can still
+  reserve several seats. Those seats are released when the reservation time runs out, and the
+  admin sees all reservations.
+- The names of participants are visible to everyone who has the event code. Mention this in your
+  event's privacy notice.
+
+## Tests
+
+```bash
+.venv/bin/pytest
+```
+
+The tests use Flask's test client with a separate SQLite database for each test. They cover
+registration, seat selection and conflicts, payment confirmation, moving and removing people,
+settings validation and admin access control (`tests/test_app.py`). `tests/test_layout.py` covers
+the layout: geometry, validation (overlaps, bounds, labels, limits), protection of occupied seats,
+and renumbering when a group is renamed. `tests/test_security.py` covers the protections:
+rate limits, session expiry and revocation, rejection of forged cookies, reservation expiry,
+one-time login links, input hardening, the audit log, and migration of databases from older versions.
+`tests/test_event_code.py` covers hiding names, the registration check and the limits on code guessing.
+
+## Deployment notes
+
+- `python -m lanparty` runs Flask's development server. For a real event, use a WSGI server, e.g.:
+  ```bash
+  .venv/bin/pip install gunicorn
+  .venv/bin/gunicorn -w 2 -b 0.0.0.0:8000 'lanparty:create_app()'
+  ```
+- **Always serve it over HTTPS** in production, behind a reverse proxy such as Caddy, nginx or Traefik:
+  - Set `SESSION_COOKIE_SECURE=1`.
+  - Set `TRUSTED_PROXIES=1`, so the app takes the client IP from `X-Forwarded-For`. Without it,
+    every visitor seems to come from the proxy's IP, and the per-IP limits apply to everyone together.
+    Only set it when a proxy really is in front of the app; otherwise clients can fake their IP.
+  - Let the proxy add `Strict-Transport-Security` and remove the `Server` header.
+- Rate limits, sessions and the audit log are stored in SQLite, so they also work with
+  several gunicorn workers.
+- Back up the SQLite file to keep your data. Databases from older versions of the app are
+  upgraded automatically at startup, and existing participant tokens keep working.
+- Limitations: the app sends no emails, and PayPal payments are confirmed by hand (there is no
+  PayPal API integration).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
