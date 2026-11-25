@@ -1,5 +1,6 @@
 """SQLite storage helpers."""
 
+from contextlib import contextmanager
 import sqlite3
 
 from flask import current_app, g
@@ -70,6 +71,26 @@ def get_db() -> sqlite3.Connection:
         conn.execute("PRAGMA foreign_keys = ON")
         g.db = conn
     return g.db
+
+
+@contextmanager
+def write_transaction():
+    """Run a read-modify-write sequence atomically across worker processes.
+
+    ``BEGIN IMMEDIATE`` takes SQLite's write lock up front, so everything read
+    inside the block is still current when the block commits. Code inside must
+    not call ``commit()`` itself.
+    """
+    db = get_db()
+    if db.in_transaction:
+        db.commit()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        yield db
+    except BaseException:
+        db.rollback()
+        raise
+    db.commit()
 
 
 def close_db(_exc=None) -> None:

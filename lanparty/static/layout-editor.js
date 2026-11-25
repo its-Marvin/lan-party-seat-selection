@@ -55,26 +55,32 @@ window.LayoutEditor = (() => {
 
   /**
    * Where each occupied seat ends up in the draft (same rule as the server's
-   * plan_seat_moves): a group keeps its people when only its label changes.
+   * plan_seat_moves): seats are resolved through the group id of the saved
+   * layout, so people stay in their group when its label changes, and a deleted
+   * group's seats are lost even if another group takes over its label.
    * Returns { at: Map(draftSeatId -> occupant), lost: [[seatId, occupant]] }.
    */
   function seatTargets() {
-    const newLabel = new Map(ed.draft.groups.map((g) => [g.id, g.label]));
-    const renamed = new Map();
-    for (const g of ed.saved.groups) {
-      if (newLabel.has(g.id) && newLabel.get(g.id) !== g.label) renamed.set(g.label, newLabel.get(g.id));
-    }
+    const oldByLabel = new Map(ed.saved.groups.map((g) => [g.label, g]));
+    const newById = new Map(ed.draft.groups.map((g) => [g.id, g]));
     const valid = new Set();
     for (const g of ed.draft.groups) {
       for (let n = 1; n <= g.tables * SEATS_PER_TABLE; n++) valid.add(g.label + n);
     }
-    const at = new Map(), lost = [];
+    const at = new Map(), lost = [], leftovers = [];
+    const place = (seatId, occ, target) => {
+      if (!target || !valid.has(target) || at.has(target)) lost.push([seatId, occ]);
+      else at.set(target, occ);
+    };
     for (const [seatId, occ] of ed.occupancy) {
       const m = /^([A-Z]{1,3})(\d+)$/.exec(seatId);
-      const target = m && renamed.has(m[1]) ? renamed.get(m[1]) + m[2] : seatId;
-      if (valid.has(target)) at.set(target, occ);
-      else lost.push([seatId, occ]);
+      const group = m && oldByLabel.get(m[1]);
+      if (!group) { leftovers.push([seatId, occ]); continue; }
+      const number = Number(m[2]);
+      const successor = newById.get(group.id);
+      place(seatId, occ, successor && number <= successor.tables * SEATS_PER_TABLE ? successor.label + number : null);
     }
+    for (const [seatId, occ] of leftovers) place(seatId, occ, seatId);
     return { at, lost };
   }
 

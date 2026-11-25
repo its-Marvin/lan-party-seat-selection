@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { info: null, me: null, payment: null, namesVisible: true };
+const state = { info: null, me: null, payment: null, namesVisible: false, codeOk: false };
 const $ = (id) => document.getElementById(id);
 
 /**
@@ -91,10 +91,11 @@ function renderMe() {
 /** Show the event-code card or the registration form, depending on what the visitor has unlocked. */
 function renderAccess() {
   const open = !!state.info?.registration_open;
-  const unlocked = !!state.me || state.namesVisible;
-  $("closed-card").hidden = open || !!state.me;
-  $("code-card").hidden = !open || unlocked;
-  $("register-card").hidden = !!state.me || !open || !unlocked;
+  const me = !!state.me;
+  // Seeing names (admins do) is not the same as holding the registration code.
+  $("closed-card").hidden = open || me;
+  $("code-card").hidden = !open || me || state.codeOk;
+  $("register-card").hidden = !open || me || !state.codeOk;
   $("names-hint").hidden = state.namesVisible;
   $("names-hint").textContent = open
     ? "🔒 Names are hidden. Enter the event code above to see who sits where."
@@ -104,7 +105,8 @@ function renderAccess() {
 async function loadSeats() {
   const data = await api("GET", "/seats");
   state.namesVisible = data.names_visible;
-  if (!data.names_visible && getEventCode() && !state.me) {
+  state.codeOk = data.event_code_ok;
+  if (!data.event_code_ok && getEventCode() && !state.me) {
     // the admin changed the code (or it was never valid)
     setEventCode(null);
     showMessage($("code-msg"), "The event code has changed. Please enter the new one.");
@@ -153,7 +155,7 @@ async function loadMe() {
     state.me = data.user;
     state.payment = data.payment;
   } catch (err) {
-    if (err.status === 401) { setToken(null); state.me = null; }
+    if (err.status === 401) { setToken(null); state.me = null; state.payment = null; }
     else throw err;
   }
 }
@@ -204,8 +206,13 @@ async function releaseSeat() {
 }
 
 function openPayDialog() {
+  if (fillPayDialog()) $("pay-dialog").showModal();
+}
+
+/** Fill the payment dialog from the current state; returns false if there is nothing to pay. */
+function fillPayDialog() {
   const p = state.payment;
-  if (!p || !state.me || state.me.paid) return;
+  if (!p || !state.me || !state.me.seat || state.me.paid) return false;
   $("pay-seat").textContent = state.me.seat;
   $("pay-amount").textContent = formatMoney(p.amount_cents);
   $("pay-address").textContent = p.paypal_address || "(not configured yet – please check back later)";
@@ -213,7 +220,23 @@ function openPayDialog() {
   $("pay-deadline").textContent = p.reserved_until
     ? `Please pay by ${formatDeadline(p.reserved_until)} – unpaid reservations are released automatically after that.`
     : "";
-  $("pay-dialog").showModal();
+  return true;
+}
+
+/** Keep an open payment dialog in sync (seat moved, expired or paid in the meantime). */
+function syncPayDialog() {
+  const dialog = $("pay-dialog");
+  if (dialog.open && !fillPayDialog()) dialog.close();
+}
+
+/** Re-read event info, the participant and the seat plan, and update every panel. */
+async function refresh() {
+  state.info = await api("GET", "/info");
+  renderInfo();
+  await loadMe();
+  await loadSeats();
+  renderMe();
+  syncPayDialog();
 }
 
 async function createLoginLink() {
@@ -288,22 +311,17 @@ async function init() {
   $("copy-login-link").addEventListener("click", (e) => copy($("login-link").value, e.target));
   $("copy-address").addEventListener("click", (e) => copy(state.payment?.paypal_address || "", e.target));
   try {
-    state.info = await api("GET", "/info");
-    renderInfo();
-    await loadMe();
-    await loadSeats();
-    renderMe();
+    await refresh();
   } catch (err) {
     showMessage($("seat-msg"), err.message);
   }
-  setInterval(() => loadSeats().catch(() => {}), 15000);
+  // expiry, admin moves, payment confirmation and opened registration show up without a reload
+  setInterval(() => refresh().catch(() => {}), 15000);
   // a login link opened in a tab that already shows the page only changes the hash
   window.addEventListener("hashchange", async () => {
     if (!location.hash.startsWith("#login=")) return;
     await handleLoginLink();
-    await loadMe();
-    renderMe();
-    await loadSeats();
+    await refresh();
   });
 }
 

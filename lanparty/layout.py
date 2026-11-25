@@ -93,7 +93,7 @@ def _int(value, name, lo, hi) -> int:
         raise LayoutError(f"{name} must be a whole number.")
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise LayoutError(f"{name} must be a whole number.") from None
     if isinstance(value, float) and value != number:
         raise LayoutError(f"{name} must be a whole number.")
@@ -214,42 +214,51 @@ def load() -> dict:
 def plan_seat_moves(old: dict, new: dict, occupied: list[str]) -> tuple[dict, list[str]]:
     """Work out how occupied seats map onto the new layout.
 
-    A group keeps its id when its label is edited, so the people sitting in it
-    move with it. Returns ``(moves, lost)``: ``moves`` maps old→new seat ids
-    that change, ``lost`` lists occupied seats that would no longer exist.
+    Seats are resolved through the *group id* of the old layout: people stay in
+    their group when its label changes, and a deleted group's seats are lost
+    even if another group takes over its label. Returns ``(moves, lost)``:
+    ``moves`` maps old→new seat ids that change, ``lost`` lists occupied seats
+    that would no longer exist.
     """
-    new_label_by_id = {g["id"]: g["label"] for g in new["groups"]}
-    renamed = {
-        g["label"]: new_label_by_id[g["id"]]
-        for g in old["groups"]
-        if g["id"] in new_label_by_id and new_label_by_id[g["id"]] != g["label"]
-    }
+    old_by_label = {g["label"]: g for g in old["groups"]}
+    new_by_id = {g["id"]: g for g in new["groups"]}
     valid = set(seat_ids(new))
-    moves, lost = {}, []
-    for seat in occupied:
-        target = seat
-        if SEAT_RE.fullmatch(seat):
-            label, number = split_seat(seat)
-            if label in renamed:
-                target = f"{renamed[label]}{number}"
-        if target not in valid:
+    moves, lost, taken = {}, [], set()
+
+    def place(seat, target):
+        if target is None or target not in valid or target in taken:
             lost.append(seat)
-        elif target != seat:
+            return
+        taken.add(target)
+        if target != seat:
             moves[seat] = target
+
+    leftovers = []
+    for seat in occupied:
+        match = SEAT_RE.fullmatch(seat)
+        group = old_by_label.get(match.group(1)) if match else None
+        if group is None:
+            leftovers.append(seat)  # not part of the old layout (e.g. legacy data)
+            continue
+        number = int(match.group(2))
+        successor = new_by_id.get(group["id"])
+        fits = successor is not None and number <= successor["tables"] * SEATS_PER_TABLE
+        place(seat, f"{successor['label']}{number}" if fits else None)
+    for seat in leftovers:  # only after the group-mapped seats have claimed theirs
+        place(seat, seat)
     return moves, lost
 
 
 def save(layout: dict, moves: dict) -> None:
-    """Store the layout and apply seat renames in one transaction."""
+    """Store the layout and apply seat renames; call inside ``write_transaction``."""
     db = get_db()
-    with db:
-        # two passes so that swapping labels (A<->B) never violates UNIQUE(seat)
-        for old in moves:
-            db.execute("UPDATE users SET seat = ? WHERE seat = ?", ("~" + old, old))
-        for old, new in moves.items():
-            db.execute("UPDATE users SET seat = ? WHERE seat = ?", (new, "~" + old))
-        db.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (SETTINGS_KEY, json.dumps(layout)),
-        )
+    # two passes so that swapping labels (A<->B) never violates UNIQUE(seat)
+    for old in moves:
+        db.execute("UPDATE users SET seat = ? WHERE seat = ?", ("~" + old, old))
+    for old, new in moves.items():
+        db.execute("UPDATE users SET seat = ? WHERE seat = ?", (new, "~" + old))
+    db.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (SETTINGS_KEY, json.dumps(layout)),
+    )

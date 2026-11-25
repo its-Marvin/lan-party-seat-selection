@@ -11,7 +11,7 @@ import time
 
 from flask import current_app, request
 
-from .db import get_db
+from .db import get_db, write_transaction
 
 PEPPER_KEY = "_ip_pepper"
 ADMIN_COOKIE = "lp_admin"
@@ -50,28 +50,31 @@ def ip_hash(ip: str | None = None) -> str:
 
 # --- rate limiting ---------------------------------------------------------
 
-def recent_events(bucket: str, key: str, window: float) -> list[float]:
+def consume(bucket: str, key: str, limit: int, window: float) -> tuple[int, int | None]:
+    """Atomically check a limit and record one attempt.
+
+    Returns ``(retry_after, event_id)``: ``retry_after`` is 0 when the attempt
+    is allowed (and was recorded as ``event_id``), otherwise the number of
+    seconds until the next attempt is allowed. Checking and recording happen in
+    one write transaction, so parallel requests cannot exceed the limit.
+    """
     now = time.time()
+    with write_transaction() as db:
+        db.execute("DELETE FROM rate_events WHERE bucket = ? AND ts < ?", (bucket, now - window))
+        events = [r["ts"] for r in db.execute(
+            "SELECT ts FROM rate_events WHERE bucket = ? AND key = ? ORDER BY ts", (bucket, key))]
+        if len(events) >= limit:
+            return max(1, int(events[-limit] + window - now) + 1), None
+        cur = db.execute("INSERT INTO rate_events (bucket, key, ts) VALUES (?, ?, ?)", (bucket, key, now))
+        return 0, cur.lastrowid
+
+
+def release(event_id: int | None) -> None:
+    """Give back an attempt recorded by ``consume`` (e.g. after a successful login)."""
+    if event_id is None:
+        return
     db = get_db()
-    db.execute("DELETE FROM rate_events WHERE bucket = ? AND ts < ?", (bucket, now - window))
-    rows = db.execute(
-        "SELECT ts FROM rate_events WHERE bucket = ? AND key = ? ORDER BY ts", (bucket, key)
-    ).fetchall()
-    db.commit()
-    return [r["ts"] for r in rows]
-
-
-def retry_after(bucket: str, key: str, limit: int, window: float) -> int:
-    """Seconds until another event is allowed (0 = allowed now)."""
-    events = recent_events(bucket, key, window)
-    if len(events) < limit:
-        return 0
-    return max(1, int(events[-limit] + window - time.time()) + 1)
-
-
-def record_event(bucket: str, key: str) -> None:
-    db = get_db()
-    db.execute("INSERT INTO rate_events (bucket, key, ts) VALUES (?, ?, ?)", (bucket, key, time.time()))
+    db.execute("DELETE FROM rate_events WHERE rowid = ?", (event_id,))
     db.commit()
 
 

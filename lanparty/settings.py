@@ -76,9 +76,11 @@ def _parse_datetime(value, name) -> str:
     if not text:
         return ""
     try:
-        datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         raise SettingsError(f"{name} must be an ISO date/time, e.g. 2026-12-12T14:00.") from None
+    if parsed.tzinfo is not None:
+        raise SettingsError(f"{name} must be a local date/time without a timezone, e.g. 2026-12-12T14:00.")
     return text
 
 
