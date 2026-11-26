@@ -138,10 +138,28 @@ function placeUnits(node, x, y, w, h) {
  *   decorateGroup(node, group, geometry) – optional hook (e.g. drag handlers)
  *   decorateItem(node, item)              – optional hook for area elements
  */
-function buildArea(layout, { renderSeat, decorateGroup, decorateItem } = {}) {
-  const area = el("div", { class: "area" });
-  area.style.width = `calc(var(--u) * ${layout.area.width})`;
-  area.style.height = `calc(var(--u) * ${layout.area.height})`;
+/** Smallest rectangle (grid units) holding every group and area element, or null if empty. */
+function contentBounds(layout) {
+  const boxes = [
+    ...layout.groups.map((g) => { const geo = groupGeometry(g); return { x: g.x, y: g.y, w: geo.w, h: geo.h }; }),
+    ...(layout.items || []).map((i) => ({ x: i.x, y: i.y, w: i.w, h: i.h })),
+  ];
+  if (!boxes.length) return null;
+  const x = Math.min(...boxes.map((b) => b.x));
+  const y = Math.min(...boxes.map((b) => b.y));
+  return {
+    x, y,
+    w: Math.max(...boxes.map((b) => b.x + b.w)) - x,
+    h: Math.max(...boxes.map((b) => b.y + b.h)) - y,
+  };
+}
+
+function buildArea(layout, { renderSeat, decorateGroup, decorateItem, view } = {}) {
+  // `view` (grid units) shows only part of the area, e.g. just the tables on a phone
+  const v = view || { x: 0, y: 0, w: layout.area.width, h: layout.area.height };
+  const area = el("div", { class: "area" + (view ? " cropped" : "") });
+  area.style.width = `calc(var(--u) * ${v.w})`;
+  area.style.height = `calc(var(--u) * ${v.h})`;
   // area elements first so table groups are drawn on top; doors/windows above zones
   const items = [...(layout.items || [])].sort(
     (a, b) => (ITEM_TYPES[a.type]?.rank ?? 0) - (ITEM_TYPES[b.type]?.rank ?? 0));
@@ -153,7 +171,7 @@ function buildArea(layout, { renderSeat, decorateGroup, decorateItem } = {}) {
       title: name,
       dataset: { id: item.id },
     }, el("span", { class: "item-icon", "aria-hidden": "true" }, type.icon), el("span", { class: "item-label" }, name));
-    placeUnits(node, item.x, item.y, item.w, item.h);
+    placeUnits(node, item.x - v.x, item.y - v.y, item.w, item.h);
     if (decorateItem) decorateItem(node, item);
     area.append(node);
   }
@@ -162,7 +180,7 @@ function buildArea(layout, { renderSeat, decorateGroup, decorateItem } = {}) {
     const groupEl = el("div", { class: "group", dataset: { id: g.id } },
       el("div", { class: "group-label" }, g.label, g.name ? el("span", { class: "group-name" }, " · " + g.name) : null),
     );
-    placeUnits(groupEl, g.x, g.y, geo.w, geo.h);
+    placeUnits(groupEl, g.x - v.x, g.y - v.y, geo.w, geo.h);
     for (const t of geo.tables) {
       const tableEl = el("div", { class: "table" + (t.h > t.w ? " vertical" : "") });
       placeUnits(tableEl, t.x, t.y, t.w, t.h);

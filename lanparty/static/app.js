@@ -55,6 +55,12 @@ function renderInfo() {
   facts.append(el("li", {}, el("strong", {}, "Fee: "), formatMoney(info.amount_cents)));
   facts.append(el("li", {}, el("strong", {}, "Seats: "), String(info.seat_count)));
 
+  const hours = info.login_link_hours;
+  if (hours) {
+    $("login-link-validity").textContent = hours % 24 === 0
+      ? `${hours / 24} day${hours === 24 ? "" : "s"}` : `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+
   $("about").hidden = !info.description;
   $("event-description").textContent = info.description;
 }
@@ -97,7 +103,10 @@ function renderMe() {
         "Reserved until ", el("strong", {}, formatDeadline(me.reserved_until)),
         " – if the payment has not been confirmed by then, the seat is released automatically."));
     }
-    if (!me.paid) {
+    if (me.paid) {
+      details.append(el("p", { class: "small muted" },
+        "Want to sit somewhere else? Pick another free seat below – your payment moves with you."));
+    } else {
       details.append(el("p", {},
         el("button", { type: "button", dataset: { focusKey: "pay" }, onclick: () => openPayDialog() },
           "Show payment details"), " ",
@@ -153,13 +162,41 @@ async function loadSeats() {
     showMessage($("code-msg"), "The event code has changed. Please enter the new one.");
   }
   renderAccess();
-  const canPickFree = !state.me || !state.me.paid;
-  const fingerprint = JSON.stringify([data.layout, data.seats, canPickFree]);
+  const fingerprint = JSON.stringify([data.layout, data.seats]);
   if (fingerprint === rendered.seats) return;
   rendered.seats = fingerprint;
+  state.seatData = data;
+  renderSeatMap(data);
+}
+
+const MIN_SEAT_PX = 26;   // smallest seat size we shrink to on narrow screens
+
+/**
+ * How to show the area in the available width: the whole area if it fits;
+ * otherwise (phones) only the part with tables and area elements, with seats
+ * shrunk down to MIN_SEAT_PX. Anything still too wide scrolls sideways.
+ */
+function fitSeatMap(layout) {
+  const map = $("seat-map");
+  map.style.removeProperty("--u");
+  const style = getComputedStyle(map);
+  const base = parseFloat(style.getPropertyValue("--u")) || 36;
+  const available = map.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  if (layout.area.width * base <= available || available <= 0) return { view: null, u: base, overflow: false };
+  const box = contentBounds(layout);
+  if (!box) return { view: null, u: base, overflow: true };
+  const u = Math.max(MIN_SEAT_PX, Math.min(base, Math.floor(available / box.w)));
+  return { view: box, u, overflow: box.w * u > available };
+}
+
+function renderSeatMap(data) {
   const restoreFocus = keepFocus($("seat-map"));
   const byId = new Map(data.seats.map((s) => [s.id, s]));
+  const fit = fitSeatMap(data.layout);
+  $("seat-map").style.setProperty("--u", `${fit.u}px`);
+  $("map-hint").hidden = !fit.overflow || !data.layout.groups.length;
   const area = buildArea(data.layout, {
+    view: fit.view,
     renderSeat(pos) {
       const seat = byId.get(pos.id);
       const title = seat.status === "free"
@@ -170,7 +207,6 @@ async function loadSeats() {
         class: "seat " + (seat.mine ? "mine" : seat.status),
         title,
         "aria-label": title,
-        disabled: seat.status === "free" && !canPickFree,
         dataset: { focusKey: seat.id },
         onclick: () => onSeatClick(seat),
       }, seat.id);
@@ -222,9 +258,11 @@ async function pickSeat(seatId) {
     $(needsCode ? "code-card" : "register-card").scrollIntoView({ behavior: "smooth" });
     return;
   }
-  const question = state.me.seat
-    ? `Move from seat ${state.me.seat} to ${seatId}?`
-    : `Reserve seat ${seatId}?`;
+  const question = !state.me.seat
+    ? `Reserve seat ${seatId}?`
+    : state.me.paid
+      ? `Switch from seat ${state.me.seat} to ${seatId}? Your payment moves with you.`
+      : `Move from seat ${state.me.seat} to ${seatId}?`;
   if (!confirm(question)) return;
   try {
     const data = await api("POST", "/me/seat", { seat: seatId });
@@ -371,5 +409,17 @@ async function init() {
     await refresh();
   });
 }
+
+// re-fit the seat map when the screen width changes (rotation, resized window)
+let resizeTimer = null;
+let lastMapWidth = 0;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const width = $("seat-map").clientWidth;
+    if (state.seatData && width !== lastMapWidth) renderSeatMap(state.seatData);
+    lastMapWidth = width;
+  }, 150);
+});
 
 document.addEventListener("DOMContentLoaded", init);

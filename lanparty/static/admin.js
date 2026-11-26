@@ -34,6 +34,14 @@ async function checkSession() {
   await loadAudit();
 }
 
+/** Give every cell its column name, shown as a label when tables stack on phones. */
+function labelCells(tbody) {
+  const heads = Array.from(tbody.closest("table").querySelectorAll("thead th"), (th) => th.textContent);
+  for (const row of tbody.rows) {
+    Array.from(row.cells).forEach((cell, i) => { if (cell.colSpan === 1) cell.dataset.label = heads[i] ?? ""; });
+  }
+}
+
 async function loadUsers() {
   const [{ users }, seatData] = await Promise.all([api("GET", "/admin/users"), api("GET", "/seats")]);
   window.LayoutEditor.setOccupancy(seatData.seats);
@@ -98,6 +106,7 @@ async function loadUsers() {
     ));
   }
 
+  labelCells(tbody);
   const seated = users.filter((u) => u.seat);
   const paid = users.filter((u) => u.paid);
   const amount = settingsCache ? settingsCache.amount_cents : 0;
@@ -150,6 +159,7 @@ async function loadAudit() {
     );
   });
   $("audit").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { colspan: 4, class: "muted" }, "No entries yet."))]));
+  labelCells($("audit"));
 }
 
 async function loadSettings() {

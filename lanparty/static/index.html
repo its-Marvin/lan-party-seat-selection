@@ -4,14 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LAN Party – Seat Registration</title>
+  <meta name="color-scheme" content="dark light">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js"></script>
   <script src="/static/common.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="hero">
     <div class="wrap">
-      <h1 id="event-name">LAN Party</h1>
+      <div class="header-row">
+        <h1 id="event-name">LAN Party</h1>
+        <label class="theme-switch">
+          <select id="theme-select" aria-label="Colour theme">
+            <option value="auto">◐ Auto</option>
+            <option value="light">☀ Light</option>
+            <option value="dark">☾ Dark</option>
+          </select>
+        </label>
+      </div>
       <ul class="facts" id="event-facts"></ul>
     </div>
   </header>
@@ -59,7 +70,7 @@
       <div class="login-link-box">
         <p class="muted small">
           Want to check your seat on another device (or keep a way back in)?
-          Create a one-time login link – it works once and expires after 24 hours.
+          Create a one-time login link – it works once and stays valid for <span id="login-link-validity">7 days</span>.
         </p>
         <button type="button" id="create-login-link">Create login link</button>
         <div id="login-link-result" hidden>
@@ -82,6 +93,7 @@
         <span><i class="seat-dot mine"></i>your seat</span>
       </div>
       <p id="names-hint" class="muted small" hidden></p>
+      <p id="map-hint" class="muted small" hidden>↔ Swipe sideways to see the whole plan.</p>
       <div id="seat-map" class="seat-map" aria-label="Seat map"></div>
       <p id="seat-msg" class="message"></p>
       <p class="muted small" id="seat-stats"></p>

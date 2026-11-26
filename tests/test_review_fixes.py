@@ -156,9 +156,9 @@ def test_release_rechecks_paid_state_inside_transaction(app, admin, monkeypatch)
     admin.post(f"/api/admin/users/{uid}/paid", json={"paid": True})
     monkeypatch.setattr(api, "require_user", lambda: stale)
     assert c.delete("/api/me/seat", headers=h).status_code == 409
-    assert c.post("/api/me/seat", json={"seat": "A2"}, headers=h).status_code == 409
     monkeypatch.undo()
-    assert c.get("/api/me", headers=h).get_json()["user"]["seat"] == "A1"
+    me = c.get("/api/me", headers=h).get_json()["user"]
+    assert me["seat"] == "A1" and me["paid"] is True
 
 
 # --- concurrency: limits cannot be exceeded by parallel requests -------------------------

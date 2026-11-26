@@ -248,7 +248,8 @@ def get_user(user_id: int):
     return row
 
 
-PAID_LOCKED = "Your payment is already confirmed. Ask an admin to change your seat."
+PAID_NO_RELEASE = ("Your payment is already confirmed, so the seat can't be given up here. "
+                   "You can switch to another free seat, or ask an admin to cancel.")
 
 
 def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> None:
@@ -257,8 +258,9 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> No
     Runs as one write transaction: the paid state, the layout, the per-IP
     pending limit and the seat itself are all read and changed under the same
     lock, so concurrent payment confirmations, layout saves or reservations
-    cannot interleave. ``by_participant`` applies the participant rules (paid
-    seats are locked, new reservations count against the per-IP limit).
+    cannot interleave. ``by_participant`` applies the participant rules (a paid
+    seat can be switched but not released, new unpaid reservations count against
+    the per-IP limit).
 
     The unpaid reservation window starts with the first seat pick and is *not*
     reset by switching seats or by releasing and re-picking within the window.
@@ -270,15 +272,17 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> No
         user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             raise ApiError(404, "User not found.")
-        if by_participant and user["paid"]:
-            raise ApiError(409, PAID_LOCKED)
+        if by_participant and user["paid"] and seat_value is None:
+            # giving up a paid seat means a refund: that stays with the admins
+            raise ApiError(409, PAID_NO_RELEASE)
         if seat_value is None:
             db.execute("UPDATE users SET seat = NULL, seat_selected_at = NULL WHERE id = ?", (user_id,))
             return
         seat = lay.normalize_seat(seat_value)
         if seat is None or seat not in set(lay.seat_ids(lay.load())):
             raise ApiError(400, "This seat does not exist.")
-        if by_participant and user["seat"] is None:  # new reservation (switching does not count)
+        if by_participant and user["seat"] is None and not user["paid"]:
+            # new unpaid reservation (switching seats does not count)
             pending = db.execute(
                 "SELECT COUNT(*) FROM users WHERE paid = 0 AND seat IS NOT NULL AND reserved_ip_hash = ?",
                 (ip_key,),
@@ -307,6 +311,7 @@ def info():
     data.pop("event_code")
     data["registration_open"] = registration_open()
     data["seat_count"] = len(lay.seat_ids(lay.load()))
+    data["login_link_hours"] = conf("LOGIN_CODE_HOURS")
     return jsonify(data)
 
 
@@ -402,8 +407,12 @@ def choose_seat():
     if seat is None:
         raise ApiError(400, "This seat does not exist.")
     assign_seat(user["id"], seat, by_participant=True)
-    user = get_user(user["id"])
-    return jsonify(user=user_dict(user), payment=payment_info(user))
+    updated = get_user(user["id"])
+    if updated["paid"] and updated["seat"] != user["seat"]:
+        # the payment moves with the person; admins see it in the audit log
+        sec.audit(f"participant:{user['id']}", "user.seat_switched",
+                  **user_summary(user), to=updated["seat"])
+    return jsonify(user=user_dict(updated), payment=payment_info(updated))
 
 
 @bp.delete("/me/seat")
