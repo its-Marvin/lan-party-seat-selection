@@ -47,6 +47,9 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/static/app.js` | Public page: access cards, seat map (fit and crop on phones), payment dialog, login links, 15 s polling |
 | `lanparty/static/admin.js` | Admin page: session, participants table, settings, audit log, unsaved-work handling |
 | `lanparty/static/layout-editor.js` | Drag-and-drop layout editor (`window.LayoutEditor`) |
+| `lanparty/i18n.py` | Server translations: `tr(template, **params)` (English template = key into `lanparty/locales/<lang>.json`), `N_()` marks constants; language from `X-Lang`, else `Accept-Language` |
+| `lanparty/static/i18n.js` | Browser translations: `t(key, params)`, `tNodes()` (placeholders as DOM nodes), plural via `key.one/.other`, applies `data-i18n*` attributes on DOMContentLoaded; language switch reloads the page |
+| `lanparty/static/locales/*.js` | Browser catalogs (`en-US`, `de-DE`), plain JSON inside `I18N.add(...)` |
 | `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
 | `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
 | `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
@@ -116,6 +119,16 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   `Cache-Control: no-store` on `/api`, `TRUSTED_PROXIES` for ProxyFix.
 - Audit everything an admin would want to trace (`security.audit`).
 
+### Translations
+- **No user-visible string literals** in JS or HTML. Use `t("key")` / `tNodes()` in scripts and
+  `data-i18n` / `data-i18n-html` / `data-i18n-attr` in HTML (wrap label text in a `<span>` so the
+  input inside the label survives). Add every key to **both** `static/locales/*.js`.
+- Server messages that reach users go through `tr("English template {x}", x=…)` (or `N_()` for
+  constants). Add the German text to `lanparty/locales/de-DE.json`. Audit log entries stay English.
+- Don't name a local variable `t` where `t()` is needed (it shadows the global translator).
+- Dates and money use `window.I18N.lang` (`formatDateTime`, `formatMoney` in `common.js`).
+- German uses informal "du". `tests/test_i18n.py` checks completeness, unused keys and placeholders.
+
 ### Frontend
 - The CSP allows **no inline scripts or inline `style` attributes**. Set styles via CSSOM
   (`node.style.x = …`, `style.setProperty`), and put scripts in separate files.
@@ -158,14 +171,13 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 ## Current state (2026-11-26)
 
 - PR #1 (the whole app plus three review rounds) is **merged** into `main`.
-- Branch **`feature/mobile-theme-self-service`** has **uncommitted** work, all tests passing
-  and checked in the browser:
-  - mobile layout: seat map fit and crop, stacked admin tables, dialog tweaks
-  - paid participants can switch seats themselves
-  - Auto/Light/Dark theme (`theme.js`, colour tokens)
-  - 7-day login links (`/api/info.login_link_hours`)
-  - README updated
-- **Next step:** the owner has not yet said whether to commit, push and open a PR for it.
+- Open PRs form a **stack**; merge them in order (each later PR's base then moves to `main`):
+  1. #2 `feature/mobile-theme-self-service` → `main`: mobile layout, paid seat switching,
+     Auto/Light/Dark, 7-day login links
+  2. #3 `feature/multi-event` → #2: several events (draft/upcoming/active/archived), `TIMEZONE`
+  3. #4 `feature/event-themes` → #3: per-event themes, `THEMES_DIR`, retro theme, `THEMES.md`
+  4. `feature/i18n` → #4: English/German for both pages and server messages
+- Copilot reviews are still pending for all of them.
 - The local branch `feature/seat-registration-app` is stale (merged and deleted on the remote)
   and can be deleted.
 
@@ -173,3 +185,4 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 
 - A cut-off for self-service seat switching (for example none after the event starts).
 - Email delivery of login links. Currently admins copy the link manually.
+- Translating event content (name, description) per language; translating audit log actions.

@@ -17,6 +17,7 @@ from . import layout as lay
 from . import security as sec
 from . import settings as cfg
 from . import themes as th
+from .i18n import N_, tr
 from .db import get_db, read_snapshot, write_transaction
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -62,14 +63,14 @@ def _finite_float(text):
 def json_body() -> dict:
     """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON types)."""
     if not request.is_json:
-        raise ApiError(415, "Expected a JSON request body (Content-Type: application/json).")
+        raise ApiError(415, tr("Expected a JSON request body (Content-Type: application/json)."))
     try:
         data = json.loads(request.get_data(cache=True) or b"null",
                           parse_constant=_reject_constant, parse_float=_finite_float)
     except (ValueError, RecursionError):
-        raise ApiError(400, "Malformed JSON.") from None
+        raise ApiError(400, tr("Malformed JSON.")) from None
     if not isinstance(data, dict):
-        raise ApiError(400, "Expected a JSON object.")
+        raise ApiError(400, tr("Expected a JSON object."))
     return data
 
 
@@ -78,14 +79,15 @@ def conf(key):
 
 
 def human_wait(seconds: int) -> str:
-    return f"{seconds} seconds" if seconds < 120 else f"{(seconds + 59) // 60} minutes"
+    return tr("{n} seconds", n=seconds) if seconds < 120 else tr("{n} minutes", n=(seconds + 59) // 60)
 
 
 def enforce_limit(bucket: str, key: str, limit: int, window: float, message: str) -> None:
     """Count this request against a limit (atomically) or refuse it with 429."""
     wait, _ = sec.consume(bucket, key, limit, window)
     if wait:
-        raise ApiError(429, f"{message} Please try again in {human_wait(wait)}.", retry_after=wait)
+        raise ApiError(429, tr("{message} Please try again in {wait}.", message=message, wait=human_wait(wait)),
+                       retry_after=wait)
 
 
 def event_settings(event_id: int) -> dict:
@@ -108,7 +110,7 @@ def settings() -> dict:
 def require_active_event() -> int:
     event_id = active_event_id()
     if event_id is None:
-        raise ApiError(403, "There is no event open for registration right now.")
+        raise ApiError(403, tr("There is no event open for registration right now."))
     return event_id
 
 
@@ -142,7 +144,7 @@ def check_event_code(value, *, raise_when_limited: bool) -> bool:
     wait, attempt = sec.consume("event_code_fail", sec.ip_hash(), conf("EVENT_CODE_MAX_PER_IP"), 900)
     if wait:
         if raise_when_limited:
-            raise ApiError(429, f"Too many wrong event codes. Please try again in {human_wait(wait)}.",
+            raise ApiError(429, tr("Too many wrong event codes. Please try again in {wait}.", wait=human_wait(wait)),
                            retry_after=wait)
         return False
     if len(code) <= 20 and hmac.compare_digest(code.encode(), expected.encode()):
@@ -235,7 +237,8 @@ def payment_info(user_row) -> dict:
     return {
         "paypal_address": s["paypal_address"],
         "amount_cents": s["amount_cents"],
-        "reference": f"{s['event_name']} - Seat {user_row['seat']} - {user_row['name']}",
+        "reference": tr("{event} - Seat {seat} - {name}", event=s["event_name"], seat=user_row["seat"],
+                        name=user_row["name"]),
         "reserved_until": reserved_until(user_row),
     }
 
@@ -273,21 +276,21 @@ def current_user():
 def require_user():
     user = current_user()
     if user is None:
-        raise ApiError(401, "Please register or log in first.")
+        raise ApiError(401, tr("Please register or log in first."))
     return user
 
 
 def get_user(user_id: int):
     row = get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if row is None:
-        raise ApiError(404, "User not found.")
+        raise ApiError(404, tr("User not found."))
     return row
 
 
-ARCHIVED_READ_ONLY = "This event is archived; its participants and seat plan can't be changed any more."
+ARCHIVED_READ_ONLY = N_("This event is archived; its participants and seat plan can't be changed any more.")
 
-PAID_NO_RELEASE = ("Your payment is already confirmed, so the seat can't be given up here. "
-                   "You can switch to another free seat, or ask an admin to cancel.")
+PAID_NO_RELEASE = N_("Your payment is already confirmed, so the seat can't be given up here. "
+                      "You can switch to another free seat, or ask an admin to cancel.")
 
 
 def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> None:
@@ -307,26 +310,26 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> No
     with write_transaction() as db:
         user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
-            raise ApiError(404, "User not found.")
+            raise ApiError(404, tr("User not found."))
         event_id = user["event_id"]
         # read fresh under the lock: the dates may just have changed
         event = cfg.load(event_id)
         state = ev.status(event)
         if by_participant and state != "active":
-            raise ApiError(403, "Registration for this event is closed.")
+            raise ApiError(403, tr("Registration for this event is closed."))
         if state == "archived":
-            raise ApiError(409, ARCHIVED_READ_ONLY)
+            raise ApiError(409, tr(ARCHIVED_READ_ONLY))
         hours = event["reservation_hours"]
         window = f"-{hours} hours" if hours > 0 else "-1000 years"
         if by_participant and user["paid"] and seat_value is None:
             # giving up a paid seat means a refund: that stays with the admins
-            raise ApiError(409, PAID_NO_RELEASE)
+            raise ApiError(409, tr(PAID_NO_RELEASE))
         if seat_value is None:
             db.execute("UPDATE users SET seat = NULL, seat_selected_at = NULL WHERE id = ?", (user_id,))
             return
         seat = lay.normalize_seat(seat_value)
         if seat is None or seat not in set(lay.seat_ids(lay.load(event_id))):
-            raise ApiError(400, "This seat does not exist.")
+            raise ApiError(400, tr("This seat does not exist."))
         if by_participant and user["seat"] is None and not user["paid"]:
             # new unpaid reservation (switching seats does not count)
             pending = db.execute(
@@ -335,8 +338,8 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> No
                 (event_id, ip_key),
             ).fetchone()[0]
             if pending >= conf("MAX_PENDING_PER_IP"):
-                raise ApiError(429, "Too many unpaid reservations from your network. "
-                                    "Please wait until earlier reservations are paid or released.")
+                raise ApiError(429, tr("Too many unpaid reservations from your network. "
+                                       "Please wait until earlier reservations are paid or released."))
         else:
             ip_key = None  # keep the IP of the original reservation
         try:
@@ -349,7 +352,7 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> No
                 (seat, window, ip_key, user_id),
             )
         except sqlite3.IntegrityError:
-            raise ApiError(409, f"Seat {seat} is already taken.") from None
+            raise ApiError(409, tr("Seat {seat} is already taken.", seat=seat)) from None
 
 
 @bp.get("/info")
@@ -414,9 +417,9 @@ def seat_list(layout: dict, occupants, my_seat: str | None, show_names: bool) ->
 def verify_event_code():
     """Check the event code (to unlock names on the seat plan before registering)."""
     if not registration_open():
-        raise ApiError(403, "Registration hasn't opened yet.")
+        raise ApiError(403, tr("Registration hasn't opened yet."))
     if not check_event_code(json_body().get("code"), raise_when_limited=True):
-        raise ApiError(400, "Wrong event code.")
+        raise ApiError(400, tr("Wrong event code."))
     return jsonify(ok=True)
 
 
@@ -425,24 +428,24 @@ def register():
     data = json_body()
     key = sec.ip_hash()
     enforce_limit("register", key, conf("REGISTER_MAX_PER_IP"), 3600,
-                  "Too many registrations from your network.")
+                  tr("Too many registrations from your network."))
     if not registration_open():
-        raise ApiError(403, "Registration hasn't opened yet.")
+        raise ApiError(403, tr("Registration hasn't opened yet."))
     if not check_event_code(data.get("event_code"), raise_when_limited=True):
-        raise ApiError(403, "Please enter the correct event code to register.")
+        raise ApiError(403, tr("Please enter the correct event code to register."))
 
     name = str(data.get("name") or "").strip()
     email = str(data.get("email") or "").strip().lower()
     if not 2 <= len(name) <= 60:
-        raise ApiError(400, "Name must be between 2 and 60 characters.")
+        raise ApiError(400, tr("Name must be between 2 and 60 characters."))
     if len(email) > 200 or not EMAIL_RE.match(email):
-        raise ApiError(400, "Please enter a valid email address.")
+        raise ApiError(400, tr("Please enter a valid email address."))
     token = sec.new_secret()
     try:
         with write_transaction() as db:
             event_id = require_active_event()
             if ev.status(cfg.load(event_id)) != "active":  # dates changed in the meantime
-                raise ApiError(403, "There is no event open for registration right now.")
+                raise ApiError(403, tr("There is no event open for registration right now."))
             cur = db.execute(
                 "INSERT INTO users (event_id, name, email, token_hash) VALUES (?, ?, ?, ?)",
                 (event_id, name, email, sec.sha256(token)),
@@ -451,8 +454,8 @@ def register():
                        (sec.sha256(token), cur.lastrowid))
     except sqlite3.IntegrityError:
         raise ApiError(
-            409, "This email address is already registered. Open a login link from a device "
-                 "where you are logged in, or ask an admin for one."
+            409, tr("This email address is already registered. Open a login link from a device "
+                    "where you are logged in, or ask an admin for one.")
         ) from None
     return jsonify(token=token, user=user_dict(get_user(cur.lastrowid))), 201
 
@@ -468,7 +471,7 @@ def choose_seat():
     user = require_user()
     seat = json_body().get("seat")
     if seat is None:
-        raise ApiError(400, "This seat does not exist.")
+        raise ApiError(400, tr("This seat does not exist."))
     assign_seat(user["id"], seat, by_participant=True)
     updated = get_user(user["id"])
     if updated["paid"] and updated["seat"] != user["seat"]:
@@ -514,13 +517,13 @@ def lookup_login_code(code):
 
 def _login_code_attempt():
     key = sec.ip_hash()
-    enforce_limit("login_code", key, conf("LOGIN_CODE_MAX_PER_IP"), 900, "Too many login attempts.")
+    enforce_limit("login_code", key, conf("LOGIN_CODE_MAX_PER_IP"), 900, tr("Too many login attempts."))
 
 
 @bp.post("/me/login-link")
 def my_login_link():
     user = require_user()
-    enforce_limit("login_link", str(user["id"]), 10, 3600, "Too many login links requested.")
+    enforce_limit("login_link", str(user["id"]), 10, 3600, tr("Too many login links requested."))
     code, expires = create_login_code(user["id"])
     return jsonify(code=code, expires_at=expires)
 
@@ -531,7 +534,7 @@ def login_preview():
     _login_code_attempt()
     row = lookup_login_code(json_body().get("code"))
     if row is None:
-        raise ApiError(400, "This login link is invalid, expired or has already been used.")
+        raise ApiError(400, tr("This login link is invalid, expired or has already been used."))
     return jsonify(user_id=row["id"], name=row["name"])
 
 
@@ -540,12 +543,12 @@ def login_with_code():
     _login_code_attempt()
     row = lookup_login_code(json_body().get("code"))
     if row is None:
-        raise ApiError(400, "This login link is invalid, expired or has already been used.")
+        raise ApiError(400, tr("This login link is invalid, expired or has already been used."))
     db = get_db()
     deleted = db.execute("DELETE FROM login_codes WHERE code_hash = ?", (row["code_hash"],)).rowcount
     db.commit()
     if not deleted:  # used concurrently
-        raise ApiError(400, "This login link has already been used.")
+        raise ApiError(400, tr("This login link has already been used."))
     token = issue_token(row["id"])
     return jsonify(token=token, user=user_dict(get_user(row["id"])))
 
@@ -556,10 +559,10 @@ def admin_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
         if not conf("ADMIN_PASSWORD"):
-            raise ApiError(401, "Admin login required.")
+            raise ApiError(401, tr("Admin login required."))
         session = sec.current_admin_session()
         if session is None:
-            raise ApiError(401, "Admin login required.")
+            raise ApiError(401, tr("Admin login required."))
         g.admin = session
         return view(*args, **kwargs)
     return wrapper
@@ -575,16 +578,16 @@ def admin_event_id() -> int:
     if raw is None:
         return ev.default_admin_id()
     if not raw.isdigit() or len(raw) > 9:
-        raise ApiError(400, "'event' must be an event id.")
+        raise ApiError(400, tr("'event' must be an event id."))
     if ev.get(int(raw)) is None:
-        raise ApiError(404, "Event not found.")
+        raise ApiError(404, tr("Event not found."))
     return int(raw)
 
 
 def require_not_archived(event_id: int) -> None:
     """Call inside a write transaction (the status is read fresh)."""
     if ev.status(cfg.load(event_id)) == "archived":
-        raise ApiError(409, ARCHIVED_READ_ONLY)
+        raise ApiError(409, tr(ARCHIVED_READ_ONLY))
 
 
 def event_summary(e: dict) -> dict:
@@ -611,7 +614,7 @@ def clean_actor_name(value) -> str:
 def admin_login():
     expected = conf("ADMIN_PASSWORD")
     if not expected:
-        raise ApiError(503, "Admin login is disabled: ADMIN_PASSWORD is not set.")
+        raise ApiError(503, tr("Admin login is disabled: ADMIN_PASSWORD is not set."))
     data = json_body()
     ip = sec.client_ip()
     key = sec.ip_hash(ip)
@@ -625,13 +628,13 @@ def admin_login():
         if wait:
             sec.release(ip_attempt)
     if wait:
-        raise ApiError(429, f"Too many failed logins. Please try again in {human_wait(wait)}.",
+        raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
     name = clean_actor_name(data.get("name"))
     password = str(data.get("password") or "")
     if not hmac.compare_digest(password.encode(), expected.encode()):
         sec.audit("anonymous", "admin.login_failed", ip=ip, name=name)
-        raise ApiError(401, "Wrong password.")
+        raise ApiError(401, tr("Wrong password."))
     sec.release(ip_attempt)
     sec.release(global_attempt)
     token = sec.create_admin_session(name)
@@ -721,7 +724,7 @@ def admin_events():
 def admin_create_event():
     copy_from = json_body().get("copy_from")
     if copy_from is not None and (isinstance(copy_from, bool) or not isinstance(copy_from, int)):
-        raise ApiError(400, "'copy_from' must be an event id or null.")
+        raise ApiError(400, tr("'copy_from' must be an event id or null."))
     with write_transaction():
         event_id = ev.create(copy_from)
     sec.audit(actor(), "event.created", event_id=event_id, copied_from=copy_from)
@@ -744,7 +747,7 @@ def admin_set_paid(user_id):
     user = get_user(user_id)
     paid = json_body().get("paid")
     if not isinstance(paid, bool):
-        raise ApiError(400, "'paid' must be true or false.")
+        raise ApiError(400, tr("'paid' must be true or false."))
     # The confirmed amount is stored with the payment, so later fee changes don't
     # rewrite what was actually received. Revoking a payment starts a fresh
     # reservation window. Only a real state change is applied (and audited).
@@ -770,7 +773,7 @@ def admin_move(user_id):
     user = get_user(user_id)
     data = json_body()
     if "seat" not in data:
-        raise ApiError(400, "'seat' is required (use null to free the seat).")
+        raise ApiError(400, tr("'seat' is required (use null to free the seat)."))
     assign_seat(user_id, data["seat"])
     updated = get_user(user_id)
     if updated["seat"] != user["seat"]:
@@ -783,7 +786,7 @@ def admin_move(user_id):
 def admin_login_link(user_id):
     user = get_user(user_id)
     if user["event_id"] != active_event_id():
-        raise ApiError(409, "Login links only work for participants of the active event.")
+        raise ApiError(409, tr("Login links only work for participants of the active event."))
     code, expires = create_login_code(user_id)
     sec.audit(actor(), "user.login_link_created", **user_summary(user))
     return jsonify(code=code, expires_at=expires)
@@ -855,7 +858,7 @@ def admin_put_layout():
         if lost:
             who = ", ".join(f"{r['seat']} ({r['name']})" for r in occupants if r["seat"] in lost)
             raise ApiError(
-                409, f"This layout would remove occupied seats: {who}. Move those people first."
+                409, tr("This layout would remove occupied seats: {who}. Move those people first.", who=who)
             )
         lay.save(new, moves, event_id)
     sec.audit(actor(), "layout.saved", event_id=event_id, groups=len(new["groups"]),

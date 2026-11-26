@@ -18,6 +18,7 @@ import math
 import re
 
 from .db import get_db
+from .i18n import tr
 
 SETTINGS_KEY = "layout"
 SEATS_PER_TABLE = 2
@@ -90,63 +91,63 @@ def split_seat(seat: str) -> tuple[str, int]:
 
 def _int(value, name, lo, hi) -> int:
     if isinstance(value, bool):
-        raise LayoutError(f"{name} must be a whole number.")
+        raise LayoutError(tr("{name} must be a whole number.", name=name))
     try:
         number = int(value)
     except (TypeError, ValueError, OverflowError):
-        raise LayoutError(f"{name} must be a whole number.") from None
+        raise LayoutError(tr("{name} must be a whole number.", name=name)) from None
     if isinstance(value, float) and value != number:
-        raise LayoutError(f"{name} must be a whole number.")
+        raise LayoutError(tr("{name} must be a whole number.", name=name))
     if not lo <= number <= hi:
-        raise LayoutError(f"{name} must be between {lo} and {hi}.")
+        raise LayoutError(tr("{name} must be between {lo} and {hi}.", name=name, lo=lo, hi=hi))
     return number
 
 
 def validate(data) -> dict:
     """Validate a full layout and return a normalised copy."""
     if not isinstance(data, dict):
-        raise LayoutError("Expected a JSON object.")
+        raise LayoutError(tr("Expected a JSON object."))
     area = data.get("area")
     if not isinstance(area, dict):
-        raise LayoutError("'area' is required.")
-    width = _int(area.get("width"), "Area width", MIN_AREA, MAX_AREA)
-    height = _int(area.get("height"), "Area height", MIN_AREA, MAX_AREA)
+        raise LayoutError(tr("'area' is required."))
+    width = _int(area.get("width"), tr("Area width"), MIN_AREA, MAX_AREA)
+    height = _int(area.get("height"), tr("Area height"), MIN_AREA, MAX_AREA)
 
     raw_groups = data.get("groups")
     if not isinstance(raw_groups, list):
-        raise LayoutError("'groups' must be a list.")
+        raise LayoutError(tr("'groups' must be a list."))
     if len(raw_groups) > MAX_GROUPS:
-        raise LayoutError(f"At most {MAX_GROUPS} groups are allowed.")
+        raise LayoutError(tr("At most {n} groups are allowed.", n=MAX_GROUPS))
 
     groups, ids, labels = [], set(), set()
     for raw in raw_groups:
         if not isinstance(raw, dict):
-            raise LayoutError("Each group must be an object.")
+            raise LayoutError(tr("Each group must be an object."))
         gid = str(raw.get("id") or "")
         if not GROUP_ID_RE.fullmatch(gid) or gid in ids:
-            raise LayoutError("Each group needs a unique id.")
+            raise LayoutError(tr("Each group needs a unique id."))
         label = str(raw.get("label") or "").strip().upper()
         if not LABEL_RE.fullmatch(label):
-            raise LayoutError(f"Group label '{label}' must be 1–3 letters (A–Z).")
+            raise LayoutError(tr("Group label '{label}' must be 1–3 letters (A–Z).", label=label))
         if label in labels:
-            raise LayoutError(f"Group label '{label}' is used twice.")
+            raise LayoutError(tr("Group label '{label}' is used twice.", label=label))
         name = str(raw.get("name") or "").strip()
         if len(name) > 60:
-            raise LayoutError(f"Name of group {label} must be at most 60 characters.")
-        tables = _int(raw.get("tables"), f"Tables in group {label}", 1, MAX_TABLES_PER_GROUP)
-        per_row = _int(raw.get("per_row"), f"Tables per row in group {label}", 1, tables)
+            raise LayoutError(tr("Name of group {label} must be at most 60 characters.", label=label))
+        tables = _int(raw.get("tables"), tr("Tables in group {label}", label=label), 1, MAX_TABLES_PER_GROUP)
+        per_row = _int(raw.get("per_row"), tr("Tables per row in group {label}", label=label), 1, tables)
         orientation = raw.get("orientation", "horizontal")
         if orientation not in ORIENTATIONS:
-            raise LayoutError(f"Orientation of group {label} must be horizontal or vertical.")
+            raise LayoutError(tr("Orientation of group {label} must be horizontal or vertical.", label=label))
         group = {
             "id": gid, "label": label, "name": name,
-            "x": _int(raw.get("x"), f"X position of group {label}", 0, MAX_AREA),
-            "y": _int(raw.get("y"), f"Y position of group {label}", 0, MAX_AREA),
+            "x": _int(raw.get("x"), tr("X position of group {label}", label=label), 0, MAX_AREA),
+            "y": _int(raw.get("y"), tr("Y position of group {label}", label=label), 0, MAX_AREA),
             "tables": tables, "per_row": per_row, "orientation": orientation,
         }
         w, h = footprint(group)
         if group["x"] + w > width or group["y"] + h > height:
-            raise LayoutError(f"Group {label} does not fit inside the event area.")
+            raise LayoutError(tr("Group {label} does not fit inside the event area.", label=label))
         ids.add(gid)
         labels.add(label)
         groups.append(group)
@@ -155,46 +156,46 @@ def validate(data) -> dict:
     for i, (a, abox) in enumerate(boxes):
         for b, bbox in boxes[i + 1:]:
             if _overlap(abox, bbox):
-                raise LayoutError(f"Groups {a['label']} and {b['label']} overlap.")
+                raise LayoutError(tr("Groups {a} and {b} overlap.", a=a["label"], b=b["label"]))
 
     raw_items = data.get("items", [])
     if not isinstance(raw_items, list):
-        raise LayoutError("'items' must be a list.")
+        raise LayoutError(tr("'items' must be a list."))
     if len(raw_items) > MAX_ITEMS:
-        raise LayoutError(f"At most {MAX_ITEMS} area elements are allowed.")
+        raise LayoutError(tr("At most {n} area elements are allowed.", n=MAX_ITEMS))
     items = []
     for raw in raw_items:
         if not isinstance(raw, dict):
-            raise LayoutError("Each area element must be an object.")
+            raise LayoutError(tr("Each area element must be an object."))
         iid = str(raw.get("id") or "")
         if not GROUP_ID_RE.fullmatch(iid) or iid in ids:
-            raise LayoutError("Each area element needs a unique id.")
+            raise LayoutError(tr("Each area element needs a unique id."))
         kind = raw.get("type")
         if kind not in ITEM_TYPES:
-            raise LayoutError("Area element type must be one of: " + ", ".join(ITEM_TYPES) + ".")
+            raise LayoutError(tr("Area element type must be one of: {types}.", types=", ".join(ITEM_TYPES)))
         label = str(raw.get("label") or "").strip()
         if len(label) > 40:
-            raise LayoutError("Area element labels must be at most 40 characters.")
+            raise LayoutError(tr("Area element labels must be at most 40 characters."))
         name = label or kind
         item = {
             "id": iid, "type": kind, "label": label,
-            "x": _int(raw.get("x"), f"X position of '{name}'", 0, MAX_AREA),
-            "y": _int(raw.get("y"), f"Y position of '{name}'", 0, MAX_AREA),
-            "w": _int(raw.get("w"), f"Width of '{name}'", 1, MAX_AREA),
-            "h": _int(raw.get("h"), f"Height of '{name}'", 1, MAX_AREA),
+            "x": _int(raw.get("x"), tr("X position of '{name}'", name=name), 0, MAX_AREA),
+            "y": _int(raw.get("y"), tr("Y position of '{name}'", name=name), 0, MAX_AREA),
+            "w": _int(raw.get("w"), tr("Width of '{name}'", name=name), 1, MAX_AREA),
+            "h": _int(raw.get("h"), tr("Height of '{name}'", name=name), 1, MAX_AREA),
         }
         box = (item["x"], item["y"], item["w"], item["h"])
         if item["x"] + item["w"] > width or item["y"] + item["h"] > height:
-            raise LayoutError(f"'{name}' does not fit inside the event area.")
+            raise LayoutError(tr("'{name}' does not fit inside the event area.", name=name))
         for g, gbox in boxes:
             if _overlap(box, gbox):
-                raise LayoutError(f"'{name}' overlaps group {g['label']}.")
+                raise LayoutError(tr("'{name}' overlaps group {label}.", name=name, label=g["label"]))
         ids.add(iid)
         items.append(item)
 
     layout = {"area": {"width": width, "height": height}, "groups": groups, "items": items}
     if len(seat_ids(layout)) > MAX_SEATS:
-        raise LayoutError(f"At most {MAX_SEATS} seats are allowed.")
+        raise LayoutError(tr("At most {n} seats are allowed.", n=MAX_SEATS))
     return layout
 
 

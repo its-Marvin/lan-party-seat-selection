@@ -9,6 +9,9 @@
   <!-- the active event's theme (see THEMES.md); theme.js swaps it for /?theme=<id> previews -->
   <link rel="stylesheet" href="/theme.css" id="event-theme">
   <script src="/static/theme.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/locales/en-US.js"></script>
+  <script src="/static/locales/de-DE.js"></script>
   <script src="/static/common.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
@@ -17,13 +20,17 @@
     <div class="wrap">
       <div class="header-row">
         <h1 id="event-name">LAN Party</h1>
-        <label class="theme-switch">
-          <select id="mode-select" aria-label="Colour mode">
-            <option value="auto">◐ Auto</option>
-            <option value="light">☀ Light</option>
-            <option value="dark">☾ Dark</option>
+        <div class="header-switches">
+          <select id="lang-select" aria-label="Language" data-i18n-attr="aria-label:common.language">
+            <option value="en-US">English</option>
+            <option value="de-DE">Deutsch</option>
           </select>
-        </label>
+          <select id="mode-select" aria-label="Colour mode" data-i18n-attr="aria-label:common.mode">
+            <option value="auto" data-i18n="common.mode.auto">◐ Auto</option>
+            <option value="light" data-i18n="common.mode.light">☀ Light</option>
+            <option value="dark" data-i18n="common.mode.dark">☾ Dark</option>
+          </select>
+        </div>
       </div>
       <ul class="facts" id="event-facts"></ul>
     </div>
@@ -31,59 +38,58 @@
 
   <main class="wrap">
     <section class="card" id="about" hidden>
-      <h2>About the event</h2>
+      <h2 data-i18n="pub.about.title">About the event</h2>
       <p id="event-description" class="prewrap"></p>
     </section>
 
     <section class="card" id="no-event-card" hidden>
-      <h2>No event open right now</h2>
-      <p class="muted" id="no-event-text">There's no event open for registration at the moment. Check back later!</p>
+      <h2 data-i18n="pub.noEvent.title">No event open right now</h2>
+      <p class="muted" id="no-event-text"></p>
     </section>
 
     <section class="card" id="closed-card" hidden>
-      <h2>Registration hasn't opened yet</h2>
-      <p class="muted">Check back later. You'll get the event code with your invitation.</p>
+      <h2 data-i18n="pub.closed.title">Registration hasn't opened yet</h2>
+      <p class="muted" data-i18n="pub.closed.text">Check back later. You'll get the event code with your invitation.</p>
     </section>
 
     <section class="card" id="code-card" hidden>
-      <h2>Enter the event code</h2>
-      <p class="muted">
+      <h2 data-i18n="pub.code.title">Enter the event code</h2>
+      <p class="muted" data-i18n="pub.code.text">
         You got the event code with your invitation. It shows who sits where, so you can sit
         next to your friends, and you need it to register.
       </p>
       <form id="code-form" class="form-row">
-        <label>Event code
+        <label><span data-i18n="pub.code.label">Event code</span>
           <input name="code" class="code-input" required minlength="4" maxlength="6" pattern="[A-Za-z0-9]{4,6}"
                  autocomplete="off" autocapitalize="characters" spellcheck="false"></label>
-        <button type="submit" class="primary">Unlock</button>
+        <button type="submit" class="primary" data-i18n="pub.code.unlock">Unlock</button>
       </form>
       <p id="code-msg" class="message"></p>
     </section>
 
     <section class="card" id="register-card" hidden>
-      <h2>Register</h2>
-      <p class="muted">Register with your name and email, then pick a seat below.</p>
+      <h2 data-i18n="pub.register.title">Register</h2>
+      <p class="muted" data-i18n="pub.register.text">Register with your name and email, then pick a seat below.</p>
       <form id="register-form" class="form-row">
-        <label>Name <input name="name" required minlength="2" maxlength="60" autocomplete="nickname"></label>
-        <label>Email <input name="email" type="email" required maxlength="200" autocomplete="email"></label>
-        <button type="submit" class="primary">Register</button>
+        <label><span data-i18n="pub.register.name">Name</span>
+          <input name="name" required minlength="2" maxlength="60" autocomplete="nickname"></label>
+        <label><span data-i18n="pub.register.email">Email</span>
+          <input name="email" type="email" required maxlength="200" autocomplete="email"></label>
+        <button type="submit" class="primary" data-i18n="pub.register.submit">Register</button>
       </form>
       <p id="register-msg" class="message"></p>
     </section>
 
     <section class="card" id="me-card" hidden>
-      <h2>Your registration</h2>
+      <h2 data-i18n="pub.me.title">Your registration</h2>
       <div id="me-details"></div>
       <div class="login-link-box">
-        <p class="muted small">
-          Want to check your seat on another device (or keep a way back in)?
-          Create a one-time login link – it works once and stays valid for <span id="login-link-validity">7 days</span>.
-        </p>
-        <button type="button" id="create-login-link">Create login link</button>
+        <p class="muted small" id="login-link-intro"></p>
+        <button type="button" id="create-login-link" data-i18n="pub.loginLink.create">Create login link</button>
         <div id="login-link-result" hidden>
           <div class="copy-row">
-            <input id="login-link" readonly aria-label="One-time login link">
-            <button type="button" id="copy-login-link">Copy</button>
+            <input id="login-link" readonly aria-label="One-time login link" data-i18n-attr="aria-label:pub.loginLink.label">
+            <button type="button" id="copy-login-link" data-i18n="common.copy">Copy</button>
           </div>
           <p class="muted small" id="login-link-expiry"></p>
         </div>
@@ -92,42 +98,42 @@
     </section>
 
     <section class="card" id="seat-card">
-      <h2 id="seat-heading">Choose your seat</h2>
+      <h2 id="seat-heading" data-i18n="pub.seats.title">Choose your seat</h2>
       <div class="legend">
-        <span><i class="seat-dot free"></i>free</span>
-        <span><i class="seat-dot reserved"></i>reserved (payment pending)</span>
-        <span><i class="seat-dot paid"></i>paid</span>
-        <span><i class="seat-dot mine"></i>your seat</span>
+        <span><i class="seat-dot free"></i><span data-i18n="pub.seats.legendFree">free</span></span>
+        <span><i class="seat-dot reserved"></i><span data-i18n="pub.seats.legendReserved">reserved (payment pending)</span></span>
+        <span><i class="seat-dot paid"></i><span data-i18n="pub.seats.legendPaid">paid</span></span>
+        <span><i class="seat-dot mine"></i><span data-i18n="pub.seats.legendMine">your seat</span></span>
       </div>
       <p id="names-hint" class="muted small" hidden></p>
-      <p id="map-hint" class="muted small" hidden>↔ Swipe sideways to see the whole plan.</p>
-      <div id="seat-map" class="seat-map" aria-label="Seat map"></div>
+      <p id="map-hint" class="muted small" hidden data-i18n="pub.seats.swipe">↔ Swipe sideways to see the whole plan.</p>
+      <div id="seat-map" class="seat-map" aria-label="Seat map" data-i18n-attr="aria-label:pub.seats.mapLabel"></div>
       <p id="seat-msg" class="message"></p>
       <p class="muted small" id="seat-stats"></p>
     </section>
 
     <section class="card" id="upcoming-card" hidden>
-      <h2>Upcoming events</h2>
+      <h2 data-i18n="pub.upcoming.title">Upcoming events</h2>
       <ul class="upcoming" id="upcoming-list"></ul>
     </section>
   </main>
 
-  <footer class="wrap muted small"><a href="/admin">Admin</a></footer>
+  <footer class="wrap muted small"><a href="/admin" data-i18n="pub.footer.admin">Admin</a></footer>
 
   <dialog id="pay-dialog">
     <form method="dialog">
-      <h2>Seat <span id="pay-seat"></span> reserved!</h2>
-      <p>To confirm your seat, please send</p>
+      <h2 id="pay-title"></h2>
+      <p data-i18n="pub.pay.send">To confirm your seat, please send</p>
       <p class="big" id="pay-amount"></p>
-      <p>via PayPal (friends &amp; family) to</p>
+      <p data-i18n="pub.pay.via">via PayPal (friends &amp; family) to</p>
       <p class="big mono" id="pay-address"></p>
-      <p class="muted">Payment reference:</p>
+      <p class="muted" data-i18n="pub.pay.reference">Payment reference:</p>
       <p class="mono" id="pay-ref"></p>
       <p class="small" id="pay-deadline"></p>
-      <p class="muted small">An admin will mark your seat as paid once the money arrives.</p>
+      <p class="muted small" data-i18n="pub.pay.confirmNote">An admin will mark your seat as paid once the money arrives.</p>
       <div class="actions">
-        <button type="button" id="copy-address">Copy address</button>
-        <button value="ok" class="primary">OK</button>
+        <button type="button" id="copy-address" data-i18n="pub.pay.copyAddress">Copy address</button>
+        <button value="ok" class="primary" data-i18n="common.ok">OK</button>
       </div>
     </form>
   </dialog>
