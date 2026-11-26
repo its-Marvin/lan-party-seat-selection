@@ -107,11 +107,18 @@ window.I18N = (() => {
     else location.assign(url.href);
   }
 
+  /** `path` with this page's ?lang= choice added, if there is one (for links built in JS). */
+  function withLang(path) {
+    if (!LANGUAGES.includes(urlLang)) return path;
+    const url = new URL(path, location.origin);
+    url.searchParams.set("lang", urlLang);
+    return url.pathname + url.search + url.hash;
+  }
+
   /** Keep a ?lang= choice when following links between the public and the admin page. */
   function keepLangInLinks() {
-    if (!LANGUAGES.includes(urlLang)) return;
     document.querySelectorAll('a[href="/"], a[href="/admin"]').forEach((a) => {
-      a.setAttribute("href", `${a.getAttribute("href")}?lang=${encodeURIComponent(urlLang)}`);
+      a.setAttribute("href", withLang(a.getAttribute("href")));
     });
   }
 
@@ -128,7 +135,7 @@ window.I18N = (() => {
     }
   });
 
-  return { add, t, nodes, apply, lang, LANGUAGES };
+  return { add, t, nodes, apply, withLang, lang, LANGUAGES };
 })();
 
 const t = (key, params) => window.I18N.t(key, params);

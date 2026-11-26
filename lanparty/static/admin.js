@@ -376,7 +376,7 @@ function addMissingTheme(id) {
 
 function renderThemeChoice() {
   const id = $("theme-choice").value;
-  $("theme-preview").href = `/?theme=${encodeURIComponent(id)}`;
+  $("theme-preview").href = window.I18N.withLang(`/?theme=${encodeURIComponent(id)}`);
   $("theme-description").textContent = themesCache.find((theme) => theme.id === id)?.description ?? "";
 }
 
