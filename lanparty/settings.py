@@ -141,9 +141,12 @@ def validate_update(data: dict, event_id: int) -> dict:
         from . import themes
 
         theme = themes.get(data["theme"])
-        if theme is None:
+        if theme is not None:
+            out["theme"] = theme.id
+        elif data["theme"] != load(event_id)["theme"]:
             raise SettingsError(tr("This theme does not exist (or has a problem, see the theme list)."))
-        out["theme"] = theme.id
+        # else: the stored theme was removed or broke later. Saving other changes
+        # keeps it (the public page falls back to the default meanwhile).
     if "event_code" in data:
         code = normalize_event_code(data["event_code"])
         if code and not EVENT_CODE_RE.fullmatch(code):

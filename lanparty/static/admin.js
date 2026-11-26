@@ -121,16 +121,22 @@ async function switchEvent(eventId, force = false) {
     return;
   }
   currentEvent = eventId;
+  // the picker must name the event that is loaded, also after automatic switches
+  $("event-select").value = eventId;
   settingsDirty = false;
   // until this event's values are in the form, nothing can be typed or saved
   settingsEventId = null;
   setSettingsLocked(true);
+  // the previous event's participants (and their action buttons) must not stay usable
+  clearUsers();
   showMessage($("event-msg"), "");
   for (const id of ["settings-msg", "layout-msg", "users-msg"]) showMessage($(id), "");
   renderEventStatus();
   // Load every panel even if one fails: a panel that couldn't load stays locked
-  // (settings form, layout save) instead of keeping the previous event's data.
-  const results = await Promise.allSettled([loadSettings(), window.LayoutEditor.load(currentEvent), loadUsers()]);
+  // or empty (settings form, layout save, participants) instead of keeping the
+  // previous event's data. Settings first: the participant summary needs the fee.
+  const results = [await loadSettings().then(() => ({ status: "fulfilled" }), (reason) => ({ status: "rejected", reason }))];
+  results.push(...await Promise.allSettled([window.LayoutEditor.load(currentEvent), loadUsers()]));
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
     showMessage($("event-msg"), t("admin.event.loadFailed", { error: failed.reason.message }));
@@ -180,6 +186,12 @@ function labelCells(tbody) {
   for (const row of tbody.rows) {
     Array.from(row.cells).forEach((cell, i) => { if (cell.colSpan === 1) cell.dataset.label = heads[i] ?? ""; });
   }
+}
+
+/** Empty the participants table while another event loads (or failed to load). */
+function clearUsers() {
+  $("users").replaceChildren();
+  $("stats").textContent = "";
 }
 
 async function loadUsers() {
@@ -255,14 +267,15 @@ async function loadUsers() {
   labelCells(tbody);
   const seated = users.filter((u) => u.seat);
   const paid = users.filter((u) => u.paid);
-  const amount = settingsCache ? settingsCache.amount_cents : 0;
+  // the fee only counts if it is this event's (its settings may not have loaded)
+  const fee = settingsCache?.event_id === eventId ? settingsCache.amount_cents : null;
   // received = amounts actually confirmed; outstanding = open reservations at the current fee
   const received = paid.reduce((sum, u) => sum + (u.paid_amount_cents ?? 0), 0);
   $("stats").textContent = t("admin.users.stats", {
     registered: users.length, seated: seated.length, seats: seatData.seats.length,
     paid: paid.length, received: formatMoney(received),
-  }) + (settingsCache
-    ? t("admin.users.outstanding", { amount: formatMoney(seated.filter((u) => !u.paid).length * amount) }) : "");
+  }) + (fee !== null
+    ? t("admin.users.outstanding", { amount: formatMoney(seated.filter((u) => !u.paid).length * fee) }) : "");
 }
 
 function seatOrder(a, b) {

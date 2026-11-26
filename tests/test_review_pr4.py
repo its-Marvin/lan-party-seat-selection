@@ -4,7 +4,7 @@ from pathlib import Path
 
 from lanparty import create_app
 from tests.helpers import set_event_code
-from tests.test_themes import ADMIN_PW, VALID_CSS, add_theme, admin, app, themes_dir  # noqa: F401
+from tests.test_themes import ADMIN_PW, VALID_CSS, add_theme, admin, app, served_theme, themes_dir  # noqa: F401
 
 
 def test_relative_themes_dir_is_listed_and_served_from_the_same_folder(tmp_path, monkeypatch):
@@ -45,7 +45,7 @@ def test_unreadable_theme_css_only_disables_that_theme(app, admin, themes_dir, m
     problems = {p["id"]: p["problem"] for p in data.get_json()["problems"]}
     assert "can't be read" in problems["locked"]
     client = app.test_client()
-    assert client.get("/theme.css").status_code == 302
+    assert client.get("/theme.css").status_code == 200
     assert client.get("/themes/retro/theme.css").status_code == 200
     assert client.get("/themes/locked/theme.css").status_code == 404
 
@@ -60,4 +60,4 @@ def test_info_reports_the_theme_open_pages_should_show(app, admin, themes_dir):
     (themes_dir / "gone" / "theme.css").unlink()
     # same fallback as /theme.css
     assert client.get("/api/info").get_json()["theme"] == "default"
-    assert client.get("/theme.css").headers["Location"].endswith("/themes/default/theme.css")
+    assert served_theme(client) == "default"

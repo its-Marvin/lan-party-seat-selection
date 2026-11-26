@@ -154,10 +154,13 @@ returns 404. Check the licence of fonts and images you bundle.
 
 ## How it works
 
-- The public page loads `/static/style.css`, then `/theme.css`. That URL redirects to
-  `/themes/<id>/theme.css` of the active event's theme. Because of the redirect, relative URLs in
-  the theme resolve inside its folder. Without an active event, or if the chosen theme has
-  disappeared or become invalid, it falls back to `default`.
+- The public page loads `/static/style.css`, then `/theme.css`. That small stylesheet imports
+  `/themes/<id>/theme.css` of the active event's theme (so relative URLs in the theme resolve
+  inside its folder) and sets `--lp-theme` to the theme's id, so the page knows which theme it got.
+  Without an active event, or if the chosen theme has disappeared or become invalid, it falls back
+  to `default`. Don't use `--lp-theme` in your own theme.
+- An event keeps its theme setting even if that theme disappears later; other settings can still
+  be saved, and the public page shows `default` until the theme is back or another one is picked.
 - Pages that are already open follow changes: when polling shows a different theme (another event
   opened, or an admin picked another theme), the page switches its stylesheet.
 - `/?theme=<id>` makes `theme.js` load that theme instead (preview); such a page keeps it.
