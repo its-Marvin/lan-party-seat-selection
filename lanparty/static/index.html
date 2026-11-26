@@ -6,6 +6,8 @@
   <title>LAN Party – Seat Registration</title>
   <meta name="color-scheme" content="dark light">
   <link rel="stylesheet" href="/static/style.css">
+  <!-- the active event's theme (see THEMES.md); theme.js swaps it for /?theme=<id> previews -->
+  <link rel="stylesheet" href="/theme.css" id="event-theme">
   <script src="/static/theme.js"></script>
   <script src="/static/common.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -16,7 +18,7 @@
       <div class="header-row">
         <h1 id="event-name">LAN Party</h1>
         <label class="theme-switch">
-          <select id="theme-select" aria-label="Colour theme">
+          <select id="mode-select" aria-label="Colour mode">
             <option value="auto">◐ Auto</option>
             <option value="light">☀ Light</option>
             <option value="dark">☾ Dark</option>

@@ -18,7 +18,7 @@
       <div class="header-actions">
         <a href="/">← Public page</a>
         <label class="theme-switch">
-          <select id="theme-select" aria-label="Colour theme">
+          <select id="mode-select" aria-label="Colour mode">
             <option value="auto">◐ Auto</option>
             <option value="light">☀ Light</option>
             <option value="dark">☾ Dark</option>
@@ -176,6 +176,17 @@
             <label>End <input name="event_end" type="datetime-local"></label>
             <label>Location <input name="location" maxlength="200"></label>
             <label class="full">Description / info <textarea name="description" rows="6" maxlength="5000"></textarea></label>
+          </fieldset>
+          <fieldset>
+            <legend>Appearance</legend>
+            <label>Theme of the public page <select name="theme" id="theme-choice"></select></label>
+            <p class="small theme-preview-row"><a id="theme-preview" href="/" target="_blank" rel="noopener">Preview this theme ↗</a></p>
+            <p class="muted small full" id="theme-description"></p>
+            <p class="muted small full">
+              Every theme comes with a light and a dark mode; visitors still pick Auto, Light or Dark.
+              Add your own themes as folders in <code id="themes-dir"></code> (see <code>THEMES.md</code>).
+            </p>
+            <ul class="problems full" id="theme-problems"></ul>
           </fieldset>
           <fieldset>
             <legend>Access</legend>

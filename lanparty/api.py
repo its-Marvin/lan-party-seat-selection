@@ -16,6 +16,7 @@ from . import events as ev
 from . import layout as lay
 from . import security as sec
 from . import settings as cfg
+from . import themes as th
 from .db import get_db, read_snapshot, write_transaction
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -197,6 +198,7 @@ def public_settings(s: dict) -> dict:
         "amount_cents": s["amount_cents"],
         "reservation_hours": s["reservation_hours"],
         "event_code": s["event_code"],
+        "theme": s["theme"],
     }
 
 
@@ -692,6 +694,17 @@ def admin_seats():
                           (event_id,)).fetchall()
     return jsonify(event_id=event_id, layout=layout, seats=seat_list(layout, rows, None, True),
                    names_visible=True)
+
+
+@bp.get("/admin/themes")
+@admin_required
+def admin_themes():
+    found = th.discover().values()
+    return jsonify(
+        themes=[t.public() for t in found if t.problem is None],
+        problems=[{"id": t.id, "builtin": t.builtin, "problem": t.problem} for t in found if t.problem],
+        themes_dir=str(th.custom_dir()),
+    )
 
 
 @bp.get("/admin/events")

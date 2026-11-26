@@ -9,6 +9,8 @@ A small web app for LAN party seat registration.
   **seat layout**: groups of two-person tables that they drag into place on a plan of the event area,
   together with doors, windows, the sleeping area and food & drinks.
 - The public page shows the event's name, date, location, fee and description.
+- **Themes:** each event can have its own look (a retro green terminal theme is included), and
+  you can add your own theme folders. See [THEMES.md](THEMES.md).
 - **Several events:** admins prepare future events in advance. Each one opens automatically on
   its "registration opens" date and is archived when it ends. Only one event is open at a time.
 
@@ -51,6 +53,7 @@ All configuration is done with environment variables:
 | `EVENT_CODE_MAX_PER_IP` | `10`                         | Wrong event codes per IP per 15 minutes. |
 | `LOGIN_CODE_HOURS`      | `168`                        | How long a one-time login link stays valid (default 7 days). |
 | `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `60` / `12` | An admin session ends after this much inactivity, or after this total time at the latest. |
+| `THEMES_DIR`            | `instance/themes`            | Folder with your own themes, one sub-folder per theme (see [THEMES.md](THEMES.md)). |
 | `TIMEZONE`              | *(server's local time)*      | IANA time zone of the event dates, e.g. `Europe/Berlin`. Decides when registration opens and when an event is archived. Set it when the server runs in UTC (e.g. in a container). |
 
 You don't need a `SECRET_KEY`: admin sessions are stored in the database, not in signed cookies.
@@ -58,6 +61,7 @@ You don't need a `SECRET_KEY`: admin sessions are stored in the database, not in
 Admins change everything else in the admin UI, separately for each event:
 
 - event name, when registration opens, start and end, location, description
+- the **theme** of the public page (see [THEMES.md](THEMES.md))
 - PayPal address (an email address or a `paypal.me/...` link) and the amount due in €
 - how long unpaid reservations are held (default 48 hours; 0 = forever)
 - the **event code** (see below)
@@ -189,7 +193,11 @@ tables turn into one card per row.
 
 **Light / dark mode:** both pages follow the browser/system setting (`prefers-color-scheme`).
 The *Auto / Light / Dark* selector in the header overrides it; the choice is remembered in that
-browser (`localStorage`).
+browser (`localStorage`). Every theme has both modes.
+
+**Themes:** the public page uses the theme chosen for the active event. Admins pick it under
+*Settings → Appearance* and can preview any theme with `/?theme=<id>`. Custom themes go in
+`THEMES_DIR`; [THEMES.md](THEMES.md) explains how to build one.
 
 ### Admins
 On `/admin`, after logging in with `ADMIN_PASSWORD`:
@@ -230,6 +238,7 @@ All endpoints are under `/api` and use JSON.
 | GET    | `/admin/session` | – | `{admin: bool, actor}` |
 | GET    | `/admin/audit` | admin | Latest 200 audit log entries |
 | POST   | `/admin/users/<id>/login-link` | admin | One-time login code for that person |
+| GET    | `/admin/themes` | admin | Usable themes `{id, name, description, builtin}`, theme folders with `problems`, and `themes_dir` |
 | GET    | `/admin/events` | admin | All events with `status` and participant counts, plus `active_id`, `default_id` and `timezone` |
 | POST   | `/admin/events` | admin | `{copy_from: <id> \| null}` → a new draft event |
 | DELETE | `/admin/events/<id>` | admin | Delete an event that isn't active, with its participants |

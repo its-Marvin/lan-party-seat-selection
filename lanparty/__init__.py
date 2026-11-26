@@ -4,12 +4,13 @@ import os
 import secrets
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, redirect, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api import bp as api_bp
 from .db import init_db
+from . import events, themes
 
 MIN_ADMIN_PASSWORD_LENGTH = 12
 
@@ -52,6 +53,8 @@ def create_app(config: dict | None = None) -> Flask:
         LOGIN_CODE_HOURS=_env_int("LOGIN_CODE_HOURS", 7 * 24),
         # IANA time zone of the event dates (e.g. Europe/Berlin); empty = server time
         TIMEZONE=os.environ.get("TIMEZONE", "").strip(),
+        # folder with custom themes (one sub-folder per theme, see THEMES.md)
+        THEMES_DIR=os.environ.get("THEMES_DIR", str(instance / "themes")),
     )
     if config:
         app.config.update(config)
@@ -90,6 +93,30 @@ def create_app(config: dict | None = None) -> Flask:
     @app.get("/admin")
     def admin():
         return send_from_directory(app.static_folder, "admin.html")
+
+    @app.get("/theme.css")
+    def event_theme():
+        """Redirect to the active event's theme, so its relative URLs (fonts,
+        images) resolve inside the theme folder."""
+        from .settings import load
+
+        event_id = events.active_id()
+        wanted = load(event_id)["theme"] if event_id is not None else themes.DEFAULT_THEME
+        theme = themes.get(wanted) or themes.get(themes.DEFAULT_THEME)
+        resp = redirect(f"/themes/{theme.id}/theme.css", 302)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/themes/<theme_id>/<path:filename>")
+    def theme_file(theme_id, filename):
+        theme = themes.get(theme_id)
+        mimetype = themes.ASSET_TYPES.get(Path(filename).suffix.lower())
+        if theme is None or mimetype is None:
+            abort(404)
+        # send_from_directory refuses paths outside the theme folder
+        resp = send_from_directory(theme.path, filename, mimetype=mimetype, max_age=0)
+        resp.headers["Cache-Control"] = "no-cache"   # revalidate: themes can be edited in place
+        return resp
 
     @app.get("/favicon.ico")
     def favicon():

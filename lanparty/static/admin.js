@@ -8,6 +8,7 @@ let currentEvent = null;
 let eventsCache = [];
 let eventsRendered = null;
 let settingsSaving = false;
+let themesCache = [];
 
 const forEvent = (path) => `${path}${path.includes("?") ? "&" : "?"}event=${encodeURIComponent(currentEvent)}`;
 const currentEventData = () => eventsCache.find((e) => e.id === currentEvent) || null;
@@ -287,10 +288,35 @@ async function loadSettings() {
   $("closed-banner").hidden = !needsCode;
   if (settingsDirty) return;          // don't overwrite edits that were not saved yet
   const f = $("settings-form");
-  for (const key of ["event_name", "registration_opens", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
+  await loadThemes(settingsCache.theme);
+  for (const key of ["theme", "event_name", "registration_opens", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
     f.elements[key].value = settingsCache[key];
   }
   f.elements.amount.value = (settingsCache.amount_cents / 100).toFixed(2);
+  renderThemeChoice();
+}
+
+/** Fill the theme list; `selected` stays listed even if its folder is gone. */
+async function loadThemes(selected) {
+  const data = await api("GET", "/admin/themes");
+  themesCache = data.themes;
+  const options = data.themes.map((t) => el("option", { value: t.id }, t.builtin ? t.name : `${t.name} (custom)`));
+  if (selected && !data.themes.some((t) => t.id === selected)) {
+    options.push(el("option", { value: selected }, `${selected} (missing – the default theme is shown)`));
+  }
+  const select = $("theme-choice");
+  const current = select.value;
+  select.replaceChildren(...options);
+  if (current) select.value = current;
+  $("themes-dir").textContent = data.themes_dir;
+  $("theme-problems").replaceChildren(...data.problems.map((p) =>
+    el("li", {}, `Theme folder "${p.id}" can't be used: ${p.problem}`)));
+}
+
+function renderThemeChoice() {
+  const id = $("theme-choice").value;
+  $("theme-preview").href = `/?theme=${encodeURIComponent(id)}`;
+  $("theme-description").textContent = themesCache.find((t) => t.id === id)?.description ?? "";
 }
 
 async function onSaveSettings(event) {
@@ -354,6 +380,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("delete-event").addEventListener("click", deleteEvent);
   $("settings-form").addEventListener("submit", onSaveSettings);
   $("settings-form").addEventListener("input", () => (settingsDirty = true));
+  $("theme-choice").addEventListener("change", renderThemeChoice);
   $("logout").addEventListener("click", async () => {
     await api("POST", "/admin/logout");
     await checkSession();

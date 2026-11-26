@@ -1,14 +1,21 @@
 "use strict";
 
 /*
- * Light/dark theme. "auto" (the default) follows the browser/system setting via
- * prefers-color-scheme; "light" and "dark" override it for this browser.
- * Loaded without `defer` in <head> so the stored choice applies before the
- * first paint (no flash of the wrong theme).
+ * Colour mode (light/dark) and theme preview.
+ *
+ * Mode: "auto" (the default) follows the browser/system setting and updates
+ * when it changes; "light" and "dark" override it for this browser. The
+ * resolved mode is always set as data-mode="light|dark" on <html>; style.css
+ * and every event theme key their colours on it. Loaded without `defer` in
+ * <head> so the mode applies before the first paint (no flash).
+ *
+ * Theme preview: /?theme=<id> shows the public page with that theme instead of
+ * the active event's one (for admins trying out a theme before choosing it).
  */
 (function () {
-  const KEY = "lanparty.theme";
+  const KEY = "lanparty.theme";       // historic name: stores the mode choice
   const CHOICES = ["auto", "light", "dark"];
+  const system = window.matchMedia("(prefers-color-scheme: light)");
 
   function stored() {
     try {
@@ -20,14 +27,21 @@
   }
 
   function apply(choice) {
-    if (choice === "auto") document.documentElement.removeAttribute("data-theme");
-    else document.documentElement.setAttribute("data-theme", choice);
+    const mode = choice === "auto" ? (system.matches ? "light" : "dark") : choice;
+    document.documentElement.setAttribute("data-mode", mode);
   }
 
   apply(stored());
+  system.addEventListener("change", () => apply(stored()));
+
+  const preview = new URLSearchParams(location.search).get("theme");
+  const themeLink = document.getElementById("event-theme");
+  if (themeLink && preview && /^[a-z0-9][a-z0-9_-]{0,39}$/.test(preview)) {
+    themeLink.href = `/themes/${preview}/theme.css`;
+  }
 
   document.addEventListener("DOMContentLoaded", () => {
-    const select = document.getElementById("theme-select");
+    const select = document.getElementById("mode-select");
     if (!select) return;
     select.value = stored();
     select.addEventListener("change", () => {

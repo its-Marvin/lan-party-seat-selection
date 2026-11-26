@@ -17,6 +17,7 @@ DEFAULTS = {
     "amount_cents": "2000",
     "reservation_hours": "48",
     "event_code": "",
+    "theme": "default",         # folder name of the theme (see themes.py)
 }
 
 EVENT_CODE_RE = re.compile(r"[A-Z0-9]{4,6}")
@@ -56,6 +57,7 @@ def from_rows(rows) -> dict:
         "amount_cents": int(raw["amount_cents"]),
         "reservation_hours": int(raw["reservation_hours"]),
         "event_code": raw["event_code"],
+        "theme": raw["theme"],
     }
 
 
@@ -130,6 +132,13 @@ def validate_update(data: dict, event_id: int) -> dict:
                 f"Reservation time must be a whole number of hours between 0 and {MAX_RESERVATION_HOURS}."
             )
         out["reservation_hours"] = str(hours)
+    if "theme" in data:
+        from . import themes
+
+        theme = themes.get(data["theme"])
+        if theme is None:
+            raise SettingsError("This theme does not exist (or has a problem, see the theme list).")
+        out["theme"] = theme.id
     if "event_code" in data:
         code = normalize_event_code(data["event_code"])
         if code and not EVENT_CODE_RE.fullmatch(code):
