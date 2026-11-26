@@ -8,6 +8,7 @@
   --muted: #9aa0bd;
   --accent: #5b8cff;
   --on-accent: #0f1220;       /* 5.9:1 */
+  --accent-hover: #7aa2ff;    /* hovered primary button: 7.5:1 with --on-accent */
   --free: #2b3354;
   --free-hover: #3c4a80;
   --reserved: #c48a1a;
@@ -44,6 +45,7 @@
     --muted: #555c78;
     --accent: #2f5fd6;
     --on-accent: #ffffff;
+    --accent-hover: #2a56c6;  /* 6.5:1 with --on-accent */
     --free: #f5f7ff;
     --free-hover: #dfe5ff;
     --reserved: #e3a63a;
@@ -80,6 +82,7 @@
   --muted: #555c78;
   --accent: #2f5fd6;
   --on-accent: #ffffff;
+  --accent-hover: #2a56c6;    /* 6.5:1 with --on-accent */
   --free: #f5f7ff;
   --free-hover: #dfe5ff;
   --reserved: #e3a63a;
@@ -176,7 +179,10 @@ button {
   border-radius: 8px;
   padding: .5rem .9rem;
 }
-button:hover:not(:disabled) { filter: brightness(1.2); }
+/* Primary buttons get their own hover colour: brightening the light-mode accent
+   would drop white text below 4.5:1. */
+button:hover:not(:disabled):not(.primary) { filter: brightness(1.2); }
+button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 button.danger { background: transparent; border-color: var(--danger); color: var(--danger-text); }
 button.link { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; }
