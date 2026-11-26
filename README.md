@@ -9,6 +9,8 @@ A small web app for LAN party seat registration.
   **seat layout**: groups of two-person tables that they drag into place on a plan of the event area,
   together with doors, windows, the sleeping area and food & drinks.
 - The public page shows the event's name, date, location, fee and description.
+- **English and German:** both pages, including error messages, follow the browser language
+  and can be switched in the header. See [Languages](#languages).
 - **Themes:** each event can have its own look (a retro green terminal theme is included), and
   you can add your own theme folders. See [THEMES.md](THEMES.md).
 - **Several events:** admins prepare future events in advance. Each one opens automatically on
@@ -123,6 +125,35 @@ Wrong codes are rate-limited: after 10 wrong attempts from one IP within 15 minu
 from that IP are checked at all, whether entered on the page, sent with the seat plan request or at
 registration. Since the code is shared with every guest, treat it as a barrier against spam and
 curious strangers, not as a password. Use 6 characters.
+
+## Languages
+
+Both pages are available in **English (en-US)** and **German (de-DE)**. The German texts address
+participants informally (*du*). Visitors get the language of their browser. If it's neither
+English nor German they get English. The selector in the header switches the language and
+remembers the choice in that browser. If the browser doesn't allow storing it (privacy
+settings), the choice is kept in the address instead (`?lang=de-DE`), and links between the
+public and the admin page carry it along. Dates, times and amounts are formatted for the chosen
+language.
+
+Error messages from the server follow the same language: the browser sends it in the `X-Lang`
+header, and other clients can use `Accept-Language`. Event content that admins type in (name,
+description, location) is shown as entered. The audit log stays in English.
+
+To change a text or add a language:
+
+- Browser texts: `lanparty/static/locales/<lang>.js`, plain JSON inside `I18N.add(...)`. Keys like
+  `pub.*` (public page), `admin.*`, `editor.*` (layout editor) and `common.*`. `key.one` / `key.other`
+  are plural forms, and `{name}` is a placeholder. Static HTML refers to keys with `data-i18n`,
+  `data-i18n-html` or `data-i18n-attr`. Scripts use `t("key", {…})`.
+- Server messages: the English text in the code is the key (`tr("Seat {seat} is already taken.", seat=…)`),
+  and `lanparty/locales/<lang>.json` maps it to the translation.
+- A new language also needs an entry in `LANGUAGES` in `lanparty/i18n.py` and
+  `lanparty/static/i18n.js`, a `<script>` tag for its catalog in both HTML pages, and an option
+  in the language selector.
+
+`tests/test_i18n.py` fails when a key or server message has no translation, when a translation is
+no longer used, or when placeholders differ between languages.
 
 ## Seat layout
 

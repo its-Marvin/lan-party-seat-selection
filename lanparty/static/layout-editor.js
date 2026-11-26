@@ -132,31 +132,31 @@ window.LayoutEditor = (() => {
     const labels = new Map();
     const groups = ed.draft.groups.map((g) => ({ g, b: box("group", g) }));
     for (const { g, b } of groups) {
-      if (!/^[A-Z]{1,3}$/.test(g.label)) { list.push(`Group "${g.label}": label must be 1–3 letters.`); bad.add(g.id); }
-      if (labels.has(g.label)) { list.push(`Label ${g.label} is used twice.`); bad.add(g.id); bad.add(labels.get(g.label)); }
+      if (!/^[A-Z]{1,3}$/.test(g.label)) { list.push(t("editor.problem.label", { label: g.label })); bad.add(g.id); }
+      if (labels.has(g.label)) { list.push(t("editor.problem.labelTwice", { label: g.label })); bad.add(g.id); bad.add(labels.get(g.label)); }
       labels.set(g.label, g.id);
-      if (outside(b)) { list.push(`Group ${g.label} sticks out of the event area.`); bad.add(g.id); }
+      if (outside(b)) { list.push(t("editor.problem.groupOutside", { label: g.label })); bad.add(g.id); }
     }
     for (let i = 0; i < groups.length; i++) {
       for (let j = i + 1; j < groups.length; j++) {
         if (overlap(groups[i].b, groups[j].b)) {
-          list.push(`Groups ${groups[i].g.label} and ${groups[j].g.label} overlap.`);
+          list.push(t("editor.problem.groupsOverlap", { a: groups[i].g.label, b: groups[j].g.label }));
           bad.add(groups[i].g.id); bad.add(groups[j].g.id);
         }
       }
     }
     for (const item of ed.draft.items) {
       const b = box("item", item);
-      if (outside(b)) { list.push(`"${itemName(item)}" sticks out of the event area.`); bad.add(item.id); }
+      if (outside(b)) { list.push(t("editor.problem.itemOutside", { name: itemName(item) })); bad.add(item.id); }
       for (const { g, b: gb } of groups) {
         if (overlap(b, gb)) {
-          list.push(`"${itemName(item)}" overlaps group ${g.label}.`);
+          list.push(t("editor.problem.itemOverlaps", { name: itemName(item), label: g.label }));
           bad.add(item.id); bad.add(g.id);
         }
       }
     }
     for (const [seatId, occ] of seatTargets().lost) {
-      list.push(`Seat ${seatId} (${occ.name}) would be removed – move that person first.`);
+      list.push(t("editor.problem.seatRemoved", { seat: seatId, name: occ.name }));
     }
     return { list, bad };
   }
@@ -176,17 +176,17 @@ window.LayoutEditor = (() => {
     const tables = groups.reduce((n, g) => n + g.tables, 0);
     const items = ed.draft.items.length;
     byId("layout-summary").textContent =
-      `${groups.length} groups · ${tables} tables · ${tables * SEATS_PER_TABLE} seats · ${items} area elements` +
-      (ed.dirty ? " · unsaved changes" : "");
+      t("editor.summary", { groups: groups.length, tables, seats: tables * SEATS_PER_TABLE, items }) +
+      (ed.dirty ? t("editor.unsaved") : "");
     byId("save-layout").disabled = !canSave();
-    byId("save-layout").textContent = ed.saving ? "Saving…" : "Save layout";
+    byId("save-layout").textContent = t(ed.saving ? "admin.layout.saving" : "admin.layout.save");
     byId("discard-layout").disabled = !ed.dirty || ed.saving;
   }
 
   function makeInteractive(node, kind, obj, bad, ariaLabel) {
     node.tabIndex = 0;
     node.setAttribute("role", "button");
-    node.setAttribute("aria-label", ariaLabel + " Arrow keys move it, Delete removes it.");
+    node.setAttribute("aria-label", t("editor.keysHint", { label: ariaLabel }));
     node.classList.add("editable");
     if (obj.id === ed.selected) node.classList.add("selected");
     if (bad.has(obj.id)) node.classList.add("invalid");
@@ -200,15 +200,17 @@ window.LayoutEditor = (() => {
     const area = buildArea(ed.draft, {
       renderSeat(seat) {
         const occ = at.get(seat.id);
-        const title = occ ? `${seat.id} – ${occ.name} (${occ.status === "paid" ? "paid" : "pending"})` : `${seat.id} – free`;
+        const title = occ
+          ? t("editor.seatTaken", { seat: seat.id, name: occ.name, status: t(occ.status === "paid" ? "editor.statusPaid" : "editor.statusPending") })
+          : t("editor.seatFree", { seat: seat.id });
         return el("span", { class: "seat " + (occ ? occ.status : "free"), title }, seat.id);
       },
       decorateGroup(node, group) {
-        makeInteractive(node, "group", group, bad, `Group ${group.label}, ${group.tables} tables.`);
+        makeInteractive(node, "group", group, bad, t("editor.groupAria", { label: group.label, tables: group.tables }));
       },
       decorateItem(node, item) {
-        makeInteractive(node, "item", item, bad, `${itemName(item)}.`);
-        const handle = el("span", { class: "resize-handle", title: "Drag to resize", "aria-hidden": "true" });
+        makeInteractive(node, "item", item, bad, t("editor.itemAria", { name: itemName(item) }));
+        const handle = el("span", { class: "resize-handle", title: t("editor.resize"), "aria-hidden": "true" });
         handle.addEventListener("pointerdown", (e) => startResize(e, node, item));
         node.append(handle);
       },
@@ -218,7 +220,7 @@ window.LayoutEditor = (() => {
     });
     byId("layout-canvas").replaceChildren(area);
     if (!ed.draft.groups.length && !ed.draft.items.length) {
-      byId("layout-canvas").append(el("p", { class: "muted small canvas-empty" }, "Empty – add a group or an area element."));
+      byId("layout-canvas").append(el("p", { class: "muted small canvas-empty" }, t("editor.empty")));
     }
     byId("layout-problems").replaceChildren(...list.map((p) => el("li", {}, p)));
   }
@@ -240,18 +242,19 @@ window.LayoutEditor = (() => {
 
     if (sel.kind === "group") {
       const g = sel.obj;
-      byId("group-title").textContent = g.label;
+      byId("group-title").textContent = t("admin.layout.groupTitle", { label: g.label });
       fillForm(groupForm, g, ["label", "name", "tables", "per_row", "orientation", "x", "y"]);
       groupForm.elements.per_row.max = g.tables;
       const { at } = seatTargets();
       const occupied = groupGeometry(g).tables.flatMap((t) => t.seats).filter((s) => at.has(s.id)).length;
-      byId("group-info").textContent =
-        `${g.tables * SEATS_PER_TABLE} seats (${g.label}1–${g.label}${g.tables * SEATS_PER_TABLE}), ${occupied} occupied.`;
+      byId("group-info").textContent = t("editor.groupInfo", {
+        seats: g.tables * SEATS_PER_TABLE, first: `${g.label}1`, last: `${g.label}${g.tables * SEATS_PER_TABLE}`, occupied,
+      });
     } else {
       const item = sel.obj;
       byId("item-title").textContent = itemName(item);
       fillForm(itemForm, item, ["type", "label", "x", "y", "w", "h"]);
-      itemForm.elements.label.placeholder = ITEM_TYPES[item.type].name;
+      itemForm.elements.label.placeholder = t(ITEM_TYPES[item.type].key);
     }
   }
 
@@ -459,9 +462,9 @@ window.LayoutEditor = (() => {
   }
 
   function addItem(type) {
-    const t = ITEM_TYPES[type];
-    const item = { id: newId("i"), type, label: "", x: 0, y: 0, w: t.w, h: t.h };
-    Object.assign(item, findSpot(item.id, t.w, t.h, null, 0));
+    const def = ITEM_TYPES[type];
+    const item = { id: newId("i"), type, label: "", x: 0, y: 0, w: def.w, h: def.h };
+    Object.assign(item, findSpot(item.id, def.w, def.h, null, 0));
     addAndSelect(ed.draft.items, item);
   }
 
@@ -490,8 +493,8 @@ window.LayoutEditor = (() => {
       const { at } = seatTargets();
       const occupied = groupGeometry(g).tables.flatMap((t) => t.seats).filter((s) => at.has(s.id));
       const question = occupied.length
-        ? `Group ${g.label} has ${occupied.length} occupied seat(s). Saving will be refused until those people are moved. Delete anyway?`
-        : `Delete group ${g.label}?`;
+        ? t("editor.confirmDeleteOccupied", { label: g.label, count: occupied.length })
+        : t("editor.confirmDelete", { label: g.label });
       if (!confirm(question)) return;
       ed.draft.groups = ed.draft.groups.filter((x) => x.id !== g.id);
     } else {
@@ -517,20 +520,19 @@ window.LayoutEditor = (() => {
     try {
       const res = await api("PUT", `/admin/layout?event=${encodeURIComponent(eventId)}`, submitted);
       const moved = Object.keys(res.moved || {}).length;
-      const movedText = moved ? ` ${moved} participant(s) got new seat numbers.` : "";
+      const movedText = moved ? t("editor.moved", { count: moved }) : "";
       document.dispatchEvent(new CustomEvent("layout-saved"));
       if (ed.revision === revision) {
         await load();
-        showMessage(msg, "Layout saved." + movedText, "success");
+        showMessage(msg, t("editor.saved", { moved: movedText }), "success");
       } else {
         await refreshSaved();
-        showMessage(msg, "Layout saved." + movedText +
-          " Changes you made while it was saving are not saved yet.", "info");
+        showMessage(msg, t("editor.savedChangedMeanwhile", { moved: movedText }), "info");
       }
     } catch (err) {
       if (err.status === 401) {
         // keep the draft; admin.js offers sign-in, then Save can be retried
-        showMessage(msg, "Your admin session has expired – sign in again, then click Save layout.");
+        showMessage(msg, t("editor.sessionExpired"));
         document.dispatchEvent(new CustomEvent("admin-auth-required"));
         return;
       }
@@ -550,7 +552,7 @@ window.LayoutEditor = (() => {
   }
 
   function discard() {
-    if (!confirm("Discard all unsaved layout changes?")) return;
+    if (!confirm(t("editor.confirmDiscard"))) return;
     ed.draft = clone(ed.saved);
     if (!selection()) ed.selected = null;
     ed.dirty = false;

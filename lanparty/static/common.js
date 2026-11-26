@@ -25,7 +25,7 @@ function setToken(token) {
 
 /** `options.background`: a poll the user didn't trigger; it doesn't keep an admin session alive. */
 async function api(method, path, body, options = {}) {
-  const headers = { "Accept": "application/json" };
+  const headers = { "Accept": "application/json", "X-Lang": window.I18N.lang };
   if (options.background) headers["X-Background"] = "1";
   const token = getToken();
   if (token) headers["X-User-Token"] = token;
@@ -41,7 +41,7 @@ async function api(method, path, body, options = {}) {
   let data = {};
   try { data = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
-    const err = new Error(data.error || `Request failed (${res.status})`);
+    const err = new Error(data.error || t("common.requestFailed", { status: res.status }));
     err.status = res.status;
     throw err;
   }
@@ -49,7 +49,7 @@ async function api(method, path, body, options = {}) {
 }
 
 function formatMoney(cents) {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "EUR" })
+  return new Intl.NumberFormat(window.I18N.lang, { style: "currency", currency: "EUR" })
     .format(cents / 100);
 }
 
@@ -57,7 +57,7 @@ function formatDateTime(iso) {
   if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(d)) return iso;
-  return d.toLocaleString(undefined, {
+  return d.toLocaleString(window.I18N.lang, {
     weekday: "short", day: "numeric", month: "short", year: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
@@ -115,15 +115,15 @@ function groupGeometry(g) {
 }
 
 const ITEM_TYPES = {
-  door:     { name: "Door",          icon: "🚪", w: 2, h: 1, rank: 1 },
-  window:   { name: "Window",        icon: "🪟", w: 3, h: 1, rank: 1 },
-  sleeping: { name: "Sleeping area", icon: "🛏️", w: 6, h: 4, rank: 0 },
-  food:     { name: "Food & drinks", icon: "🍕", w: 4, h: 2, rank: 0 },
-  other:    { name: "Other",         icon: "📍", w: 3, h: 2, rank: 0 },
+  door:     { key: "item.door",     icon: "🚪", w: 2, h: 1, rank: 1 },
+  window:   { key: "item.window",   icon: "🪟", w: 3, h: 1, rank: 1 },
+  sleeping: { key: "item.sleeping", icon: "🛏️", w: 6, h: 4, rank: 0 },
+  food:     { key: "item.food",     icon: "🍕", w: 4, h: 2, rank: 0 },
+  other:    { key: "item.other",    icon: "📍", w: 3, h: 2, rank: 0 },
 };
 
 function itemName(item) {
-  return item.label || (ITEM_TYPES[item.type] || ITEM_TYPES.other).name;
+  return item.label || t((ITEM_TYPES[item.type] || ITEM_TYPES.other).key);
 }
 
 function placeUnits(node, x, y, w, h) {
