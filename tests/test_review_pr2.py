@@ -132,3 +132,15 @@ def test_primary_button_hover_keeps_text_contrast():
         tokens = dict(re.findall(r"--([a-z-]+):\s*(#[0-9a-fA-F]{6})", body))
         if "on-accent" in tokens:
             assert contrast(tokens["on-accent"], tokens["accent-hover"]) >= 4.5
+
+
+# --- stacked tables on phones: no cell keeps nowrap ---------------------------------
+
+def test_stacked_cells_wrap_even_when_marked_nowrap():
+    """Audit timestamps use .nowrap; in the 320 px card layout they must wrap anyway."""
+    css = (ROOT / "lanparty" / "static" / "style.css").read_text()
+    narrow = css[css.index("table.stack thead { display: none; }"):]
+    rule = re.search(r"^\s*table\.stack td \{([^}]*)\}", narrow, re.M).group(1)
+    assert re.search(r"white-space:\s*normal", rule)
+    # the stacked rule wins over .nowrap: same element, higher specificity (0,1,2 vs 0,1,0)
+    assert ".nowrap { white-space: nowrap; }" in css
