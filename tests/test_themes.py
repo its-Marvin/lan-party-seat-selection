@@ -146,6 +146,7 @@ def test_public_page_loads_the_event_theme_and_admin_page_does_not(app):
 TEXT_PAIRS = [
     ("text", "bg"), ("text", "card"), ("text", "input-bg"), ("text", "button-bg"), ("text", "free"),
     ("muted", "card"), ("muted", "bg"), ("accent", "card"), ("on-accent", "accent"),
+    ("on-accent", "accent-hover"),
     ("on-reserved", "reserved"), ("on-paid", "paid"), ("on-mine", "mine"),
     ("danger-text", "card"), ("success-text", "card"), ("warning-text", "card"),
     ("hero-text", "hero-from"), ("hero-text", "hero-to"),

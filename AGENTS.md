@@ -26,9 +26,11 @@ Requirements from the owner: **no Java**, tests and README required.
 ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (HOST/PORT env)
 ```
 
-- `.vscode/launch.json` has two configurations: "LAN Party: Server starten" and
-  "LAN Party: Tests (pytest)". The server one uses `instance/dev.sqlite3`, with
-  `ADMIN_PASSWORD=admin` and `ALLOW_WEAK_ADMIN_PASSWORD=1`.
+- `.vscode/launch.json` has three configurations. "LAN Party: Server starten" (127.0.0.1 only)
+  uses `instance/dev.sqlite3` with `ADMIN_PASSWORD=admin` and `ALLOW_WEAK_ADMIN_PASSWORD=1`.
+  "Server im lokalen Netz" listens on 0.0.0.0 for phone tests: it must use its own throwaway DB
+  (`instance/lan-test.sqlite3`) and a prompted password (`${input:…}`), never the real data or
+  a known password (`tests/test_review_pr2.py` checks this). Plus "LAN Party: Tests (pytest)".
 - `instance/dev.sqlite3` holds **real personal data** (it is gitignored). Never commit it,
   print its contents, or send them anywhere. Test against a copy or a fresh temp DB.
 
@@ -114,7 +116,9 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   for `LOGIN_CODE_HOURS` (default **168 h = 7 days**, the owner wants at least a week).
 - Strict JSON parsing (rejects NaN/Infinity and overflowing numbers), 256 KB body limit,
   `Cache-Control: no-store` on `/api`, `TRUSTED_PROXIES` for ProxyFix.
-- Audit everything an admin would want to trace (`security.audit`).
+- Audit everything an admin would want to trace (`security.audit`). Inside a write transaction
+  use `security.record_audit()` (no commit), so the entry describes exactly the change made under
+  that lock; `assign_seat()` audits seat moves and paid switches that way.
 
 ### Frontend
 - The CSP allows **no inline scripts or inline `style` attributes**. Set styles via CSSOM
@@ -125,6 +129,8 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   colour token to both, **and to the `retro` theme's two blocks** (`tests/test_themes.py` checks
   this and the 4.5:1 text contrast of every built-in theme; add new text pairs to `TEXT_PAIRS`).
   Fonts and corner radii go through `--font-body`, `--font-mono` and `--radius-scale`.
+  Hover states count too: primary buttons use `--accent-hover`, not the brightness filter that
+  other buttons get (it pushed white-on-accent below 4.5:1 in light mode).
 - Themes: the public page links `/theme.css` (302 to the active event's theme folder). The admin
   page doesn't load event themes. Theme files are served only with allowlisted extensions.
 - Public-page polling skips unchanged panels (fingerprints in `rendered`) and keeps focus via
