@@ -41,15 +41,18 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/__init__.py` | `create_app(config)`: reads config from env, adds security headers (strict CSP), JSON error handlers for `/api`, routes `/`, `/admin`, `/favicon.ico` (204) |
 | `lanparty/api.py` | Blueprint `/api`: participant, login-link, event-code and admin endpoints; `assign_seat()`; reservation expiry in `before_request` |
 | `lanparty/db.py` | Schema, `get_db()`, `write_transaction()` (BEGIN IMMEDIATE), `read_snapshot()` (deferred read txn), `_migrate()` |
-| `lanparty/settings.py` | Event, payment and access settings: `DEFAULTS`, `load()`, `validate_update()`, `save()` (does **not** commit) |
-| `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `save()` (no commit) |
+| `lanparty/events.py` | Events and their status from dates (`local_now()` in `TIMEZONE`), `active_id()` (cached in `g`), `default_admin_id()`, overlap check, `create()`/`delete()` (no commit) |
+| `lanparty/settings.py` | Per-event settings: `DEFAULTS`, `load(event_id)`, `validate_update(data, event_id)`, `save(values, event_id)` (does **not** commit) |
+| `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `load(event_id)`, `save(layout, moves, event_id)` (no commit) |
 | `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions |
 | `lanparty/static/common.js` | `api()`, token and event-code storage, `el()`, `showMessage`, `buildArea()` (shared seat-map renderer, optional `view` crop), `contentBounds()` |
 | `lanparty/static/app.js` | Public page: access cards, seat map (fit and crop on phones), payment dialog, login links, 15 s polling |
 | `lanparty/static/admin.js` | Admin page: session, participants table, settings, audit log, unsaved-work handling |
 | `lanparty/static/layout-editor.js` | Drag-and-drop layout editor (`window.LayoutEditor`) |
-| `lanparty/static/theme.js` | Auto/Light/Dark theme, loaded **without defer** in `<head>` |
-| `tests/` | `helpers.py` (`EVENT_CODE`, `set_event_code`), `test_app`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2` |
+| `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
+| `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
+| `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
+| `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2` |
 
 ## Rules that must not break
 
@@ -67,6 +70,30 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   event code).
 - Schema changes go in both `SCHEMA` and `_migrate()`. `_migrate()` takes the write lock
   **before** inspecting columns. Old DBs must keep working (tests cover this).
+
+### Events
+- Per-event data lives in `event_settings(event_id, key, value)` (settings **and** the layout under
+  key `layout`). The global `settings` table only holds app-wide values such as the IP pepper.
+- `users.event_id`: email and seat are unique **per event** (`UNIQUE(event_id, …)`). Every query on
+  `users` must filter by event. Participants, tokens and login codes only count for the **active**
+  event (`current_user()`, `lookup_login_code()`).
+- The status comes from the dates; there is no stored "active" flag: draft (no `registration_opens`),
+  upcoming, active, archived (`now >= event_end`). Registration windows `[registration_opens,
+  event_end)` must not overlap (checked in `settings.validate_update` inside the write transaction).
+- Anything that depends on the status and then writes (seat changes, registration, payments,
+  layout saves) re-reads it **inside** `write_transaction()` via `ev.status(cfg.load(id))`. Don't
+  rely on the per-request cache there.
+- Archived events: participants and layout are read-only (409); settings stay editable so a wrong
+  end date can be fixed; removing people is allowed (data deletion).
+- Admin endpoints take `?event=<id>` (`admin_event_id()`); the admin UI always sends it.
+- Admin UI: the settings form and the layout draft are bound to the event they were loaded from
+  (`settingsEventId`, `LayoutEditor.eventId()`), and saves go there, never to `currentEvent`.
+  While another event loads, the form and layout saving are locked; a failed load keeps them
+  locked. An event deleted elsewhere triggers a normal (unsaved-work-aware) switch, once.
+- Background polls send `X-Background: 1` (`api(…, {background: true})`); `admin_required` then
+  doesn't refresh the session, so the idle timeout still works with an open tab.
+- Migration: an old single-event DB becomes event 1 with `registration_opens` = migration time.
+  The `users` table is rebuilt (with `PRAGMA foreign_keys = OFF` around the transaction).
 
 ### Seats and layout
 - Seat id = group label + number (`A1`…). Table `t` holds seats `2t+1` and `2t+2`.
@@ -103,12 +130,16 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - The CSP allows **no inline scripts or inline `style` attributes**. Set styles via CSSOM
   (`node.style.x = …`, `style.setProperty`), and put scripts in separate files.
 - `[hidden]` is forced to `display:none !important`. Use `hidden` to toggle panels.
-- **Colours come only from CSS custom properties** in `style.css`. There are three blocks:
-  dark `:root`, `@media (prefers-color-scheme: light) :root:not([data-theme="dark"])`, and
-  `:root[data-theme="light"]`. Add every new colour token to all three. Keep text contrast at
-  4.5:1 or above (it has been checked; foreground tokens are named `--on-…`).
+- **Colours come only from CSS custom properties** in `style.css`. There are two blocks: dark
+  `:root` and `:root[data-mode="light"]` (`theme.js` always sets `data-mode`). Add every new
+  colour token to both, **and to the `retro` theme's two blocks** (`tests/test_themes.py` checks
+  this and the 4.5:1 text contrast of every built-in theme; add new text pairs to `TEXT_PAIRS`).
+  Fonts and corner radii go through `--font-body`, `--font-mono` and `--radius-scale`.
   Hover states count too: primary buttons use `--accent-hover`, not the brightness filter that
   other buttons get (it pushed white-on-accent below 4.5:1 in light mode).
+- Themes: the public page links `/theme.css` (`@import` of the active event's theme plus
+  `--lp-theme: "<id>"`, which `app.js` reads to know what it got). The admin
+  page doesn't load event themes. Theme files are served only with allowlisted extensions.
 - Public-page polling skips unchanged panels (fingerprints in `rendered`) and keeps focus via
   `data-focus-key` and `keepFocus()`. Keep this when re-rendering.
 - Admin page: never show admin data without a session. Unsaved layout or settings changes stay

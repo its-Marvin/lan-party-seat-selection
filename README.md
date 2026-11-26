@@ -9,6 +9,10 @@ A small web app for LAN party seat registration.
   **seat layout**: groups of two-person tables that they drag into place on a plan of the event area,
   together with doors, windows, the sleeping area and food & drinks.
 - The public page shows the event's name, date, location, fee and description.
+- **Themes:** each event can have its own look (a retro green terminal theme is included), and
+  you can add your own theme folders. See [THEMES.md](THEMES.md).
+- **Several events:** admins prepare future events in advance. Each one opens automatically on
+  its "registration opens" date and is archived when it ends. Only one event is open at a time.
 
 Stack: Python 3.11+ with Flask, SQLite (Python's built-in `sqlite3`), and plain HTML/CSS/JS
 with no build step.
@@ -26,6 +30,8 @@ export ADMIN_PASSWORD='choose-a-strong-password'   # at least 12 characters
 Open <http://127.0.0.1:5000> for the public page and <http://127.0.0.1:5000/admin> for the admin area.
 To get started, log in as admin, fill in the event details, the PayPal address and the amount,
 arrange the seat layout, and **set an event code**. Until there is a code, registration is closed.
+The first event is created automatically and is open straight away; see [Events](#events) for
+planning the next one.
 
 ## Configuration
 
@@ -47,16 +53,53 @@ All configuration is done with environment variables:
 | `EVENT_CODE_MAX_PER_IP` | `10`                         | Wrong event codes per IP per 15 minutes. |
 | `LOGIN_CODE_HOURS`      | `168`                        | How long a one-time login link stays valid (default 7 days). |
 | `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `60` / `12` | An admin session ends after this much inactivity, or after this total time at the latest. |
+| `THEMES_DIR`            | `instance/themes`            | Folder with your own themes, one sub-folder per theme (see [THEMES.md](THEMES.md)). |
+| `TIMEZONE`              | *(server's local time)*      | IANA time zone of the event dates, e.g. `Europe/Berlin`. Decides when registration opens and when an event is archived. Set it when the server runs in UTC (e.g. in a container). |
 
 You don't need a `SECRET_KEY`: admin sessions are stored in the database, not in signed cookies.
 
-Admins change everything else in the admin UI:
+Admins change everything else in the admin UI, separately for each event:
 
-- event name, start and end, location, description
+- event name, when registration opens, start and end, location, description
+- the **theme** of the public page (see [THEMES.md](THEMES.md))
 - PayPal address (an email address or a `paypal.me/...` link) and the amount due in €
 - how long unpaid reservations are held (default 48 hours; 0 = forever)
 - the **event code** (see below)
 - the seat layout (see below)
+
+## Events
+
+The app can hold several events, for example last summer's party, the one that is open now, and
+the next one that is already being planned. Each event has its own settings, seat layout, event
+code and participants. People register again for each event; their email address may be used once
+per event.
+
+An event's status follows from its dates (in `TIMEZONE`):
+
+| Status | When | What happens |
+|---|---|---|
+| **draft** | No "Registration opens" date yet | Only admins see it. |
+| **upcoming** | Registration opens in the future | Listed on the public page under *Upcoming events* (name, dates, location, opening date). |
+| **active** | Registration has opened and the event hasn't ended | The public page shows this event. Participants register (with its event code) and pick seats. |
+| **archived** | The end date has passed | Kept for reference. Its participants and seat plan are read-only, but its settings can still be corrected; fixing a wrong end date brings the event back. |
+
+Registration windows (from "Registration opens" to the end) of two events may not overlap, so
+**registration can only open after the previous event has ended**. An event without an end date
+blocks every later opening until an end is set. Between two events, the public page says that no
+event is open and lists the upcoming ones.
+
+On the admin page, the **Event** card at the top picks the event to show and edit:
+
+- **+ New event** copies the selected event's settings and seat layout, but not its dates, event
+  code or participants. The new event starts as a draft.
+- **Delete event** deletes an event that isn't active, with all of its participants. Use it, for
+  example, to remove old personal data once an event is long over.
+
+Login links and device logins belong to one event. Once an event is archived, its participants
+are logged out on the public page and register again for the next event.
+
+Databases from versions before multi-event support are migrated automatically: everything becomes
+the first event, which stays open.
 
 ## Event code
 
@@ -150,7 +193,11 @@ tables turn into one card per row.
 
 **Light / dark mode:** both pages follow the browser/system setting (`prefers-color-scheme`).
 The *Auto / Light / Dark* selector in the header overrides it; the choice is remembered in that
-browser (`localStorage`).
+browser (`localStorage`). Every theme has both modes.
+
+**Themes:** the public page uses the theme chosen for the active event. Admins pick it under
+*Settings → Appearance* and can preview any theme with `/?theme=<id>`. Custom themes go in
+`THEMES_DIR`; [THEMES.md](THEMES.md) explains how to build one.
 
 ### Admins
 On `/admin`, after logging in with `ADMIN_PASSWORD`:
@@ -161,6 +208,7 @@ On `/admin`, after logging in with `ADMIN_PASSWORD`:
   that person's email address.
 - The summary line shows how many people registered, seats taken, seats paid, money received (the amounts actually confirmed, which a later fee change does not alter) and money outstanding (open reservations at the current fee).
 - **Seat layout editor** (see [Seat layout](#seat-layout)).
+- **Event** card: switch between events, create the next one, delete old ones (see [Events](#events)).
 - Settings form for the event, the payment and the reservation hold time.
 - **Audit log:** shows admin logins (including failed attempts with their IP), payment
   confirmations, moves, removals, login links, settings changes (the PayPal address and amount
@@ -174,8 +222,8 @@ All endpoints are under `/api` and use JSON.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET    | `/info` | – | Event and payment settings, plus `seat_count` and `registration_open` (never the code itself) |
-| GET    | `/seats` | – (token optional, marks `mine`) | `{layout, seats, names_visible}`. Occupant names are only included for code holders (`X-Event-Code` header), participants and admins. |
+| GET    | `/info` | – | The active event's settings, plus `active`, `seat_count`, `registration_open` (never the code itself) and `upcoming` (name, dates, location and opening date of each upcoming event) |
+| GET    | `/seats` | – (token optional, marks `mine`) | `{layout, seats, names_visible}` of the active event (`layout` is `null` while none is active). Occupant names are only included for code holders (`X-Event-Code` header), participants and admins. |
 | POST   | `/event-code` | – | `{code}` → checks the event code (rate-limited; 403 while no code is set) |
 | POST   | `/register` | – | `{name, email, event_code}` → `{token, user}` (rate-limited) |
 | GET    | `/me` | token | Current user and payment info (incl. `reserved_until`) |
@@ -190,12 +238,22 @@ All endpoints are under `/api` and use JSON.
 | GET    | `/admin/session` | – | `{admin: bool, actor}` |
 | GET    | `/admin/audit` | admin | Latest 200 audit log entries |
 | POST   | `/admin/users/<id>/login-link` | admin | One-time login code for that person |
-| GET    | `/admin/users` | admin | All registrations, including emails |
+| GET    | `/admin/themes` | admin | Usable themes `{id, name, description, builtin}`, theme folders with `problems`, and `themes_dir` |
+| GET    | `/admin/events` | admin | All events with `status` and participant counts, plus `active_id`, `default_id` and `timezone` |
+| POST   | `/admin/events` | admin | `{copy_from: <id> \| null}` → a new draft event |
+| DELETE | `/admin/events/<id>` | admin | Delete an event that isn't active, with its participants |
+| GET    | `/admin/seats` | admin | Like `/seats`, for any event and always with names |
+| GET    | `/admin/users` | admin | All registrations of the event, including emails |
 | POST   | `/admin/users/<id>/paid` | admin | `{paid: true \| false}` |
 | POST   | `/admin/users/<id>/move` | admin | `{seat: "C4" \| null}` |
 | DELETE | `/admin/users/<id>` | admin | Remove the person |
 | GET/PUT| `/admin/settings` | admin | Read or update settings (partial updates allowed; `amount` in €) |
 | GET/PUT| `/admin/layout` | admin | Read or replace the seat layout; `PUT` returns `{layout, moved}` |
+
+The event-specific admin endpoints (`/admin/users`, `/admin/seats`, `/admin/settings`,
+`/admin/layout`) take `?event=<id>`. Without it they use the active event, otherwise the next
+upcoming one, otherwise the newest. Changing participants or the layout of an archived event
+returns 409.
 
 Layout format:
 

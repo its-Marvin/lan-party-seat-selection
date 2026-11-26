@@ -6,6 +6,8 @@
   <title>LAN Party – Seat Registration</title>
   <meta name="color-scheme" content="dark light">
   <link rel="stylesheet" href="/static/style.css">
+  <!-- the active event's theme (see THEMES.md); theme.js swaps it for /?theme=<id> previews -->
+  <link rel="stylesheet" href="/theme.css" id="event-theme">
   <script src="/static/theme.js"></script>
   <script src="/static/common.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -16,7 +18,7 @@
       <div class="header-row">
         <h1 id="event-name">LAN Party</h1>
         <label class="theme-switch">
-          <select id="theme-select" aria-label="Colour theme">
+          <select id="mode-select" aria-label="Colour mode">
             <option value="auto">◐ Auto</option>
             <option value="light">☀ Light</option>
             <option value="dark">☾ Dark</option>
@@ -31,6 +33,11 @@
     <section class="card" id="about" hidden>
       <h2>About the event</h2>
       <p id="event-description" class="prewrap"></p>
+    </section>
+
+    <section class="card" id="no-event-card" hidden>
+      <h2>No event open right now</h2>
+      <p class="muted" id="no-event-text">There's no event open for registration at the moment. Check back later!</p>
     </section>
 
     <section class="card" id="closed-card" hidden>
@@ -84,7 +91,7 @@
       <p id="me-msg" class="message"></p>
     </section>
 
-    <section class="card">
+    <section class="card" id="seat-card">
       <h2 id="seat-heading">Choose your seat</h2>
       <div class="legend">
         <span><i class="seat-dot free"></i>free</span>
@@ -97,6 +104,11 @@
       <div id="seat-map" class="seat-map" aria-label="Seat map"></div>
       <p id="seat-msg" class="message"></p>
       <p class="muted small" id="seat-stats"></p>
+    </section>
+
+    <section class="card" id="upcoming-card" hidden>
+      <h2>Upcoming events</h2>
+      <ul class="upcoming" id="upcoming-list"></ul>
     </section>
   </main>
 

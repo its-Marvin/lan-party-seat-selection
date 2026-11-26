@@ -4,12 +4,13 @@ import os
 import secrets
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api import bp as api_bp
 from .db import init_db
+from . import events, themes
 
 MIN_ADMIN_PASSWORD_LENGTH = 12
 
@@ -50,6 +51,10 @@ def create_app(config: dict | None = None) -> Flask:
         ADMIN_SESSION_IDLE_MINUTES=_env_int("ADMIN_SESSION_IDLE_MINUTES", 60),
         ADMIN_SESSION_MAX_HOURS=_env_int("ADMIN_SESSION_MAX_HOURS", 12),
         LOGIN_CODE_HOURS=_env_int("LOGIN_CODE_HOURS", 7 * 24),
+        # IANA time zone of the event dates (e.g. Europe/Berlin); empty = server time
+        TIMEZONE=os.environ.get("TIMEZONE", "").strip(),
+        # folder with custom themes (one sub-folder per theme, see THEMES.md)
+        THEMES_DIR=os.environ.get("THEMES_DIR", str(instance / "themes")),
     )
     if config:
         app.config.update(config)
@@ -63,6 +68,19 @@ def create_app(config: dict | None = None) -> Flask:
             f"ADMIN_PASSWORD must be at least {MIN_ADMIN_PASSWORD_LENGTH} characters long "
             "(set ALLOW_WEAK_ADMIN_PASSWORD=1 for local development only)."
         )
+
+    # absolute, so listing themes (relative to the working directory) and serving
+    # their files (send_from_directory, relative to the app) use the same folder
+    app.config["THEMES_DIR"] = str(Path(app.config["THEMES_DIR"]).resolve())
+
+    if app.config["TIMEZONE"]:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            ZoneInfo(app.config["TIMEZONE"])
+        except (ZoneInfoNotFoundError, ValueError):
+            raise RuntimeError(
+                f"Unknown TIMEZONE {app.config['TIMEZONE']!r} (use an IANA name like Europe/Berlin)."
+            ) from None
 
     if app.config["TRUSTED_PROXIES"] > 0:
         n = app.config["TRUSTED_PROXIES"]
@@ -79,6 +97,33 @@ def create_app(config: dict | None = None) -> Flask:
     @app.get("/admin")
     def admin():
         return send_from_directory(app.static_folder, "admin.html")
+
+    @app.get("/theme.css")
+    def event_theme():
+        """The active event's theme. It is imported (not inlined or redirected to),
+        so relative URLs in it (fonts, images) resolve inside the theme folder,
+        and --lp-theme tells app.js which theme this page actually got."""
+        from .settings import load
+
+        event_id = events.active_id()
+        wanted = load(event_id)["theme"] if event_id is not None else themes.DEFAULT_THEME
+        theme = themes.get(wanted) or themes.get(themes.DEFAULT_THEME)
+        # theme ids are [a-z0-9_-] only, safe inside a CSS string
+        css = f'@import url("/themes/{theme.id}/theme.css");\n:root {{ --lp-theme: "{theme.id}"; }}\n'
+        resp = app.response_class(css, mimetype="text/css")
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.get("/themes/<theme_id>/<path:filename>")
+    def theme_file(theme_id, filename):
+        theme = themes.get(theme_id)
+        mimetype = themes.ASSET_TYPES.get(Path(filename).suffix.lower())
+        if theme is None or mimetype is None:
+            abort(404)
+        # send_from_directory refuses paths outside the theme folder
+        resp = send_from_directory(theme.path, filename, mimetype=mimetype, max_age=0)
+        resp.headers["Cache-Control"] = "no-cache"   # revalidate: themes can be edited in place
+        return resp
 
     @app.get("/favicon.ico")
     def favicon():

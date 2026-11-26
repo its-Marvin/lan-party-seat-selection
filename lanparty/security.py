@@ -126,8 +126,11 @@ def create_admin_session(actor: str) -> str:
     return token
 
 
-def current_admin_session():
-    """Return the valid admin session row for this request (refreshing it), or None."""
+def current_admin_session(refresh: bool = True):
+    """Return the valid admin session row for this request, or None.
+
+    ``refresh`` counts the request as activity (extends the idle timeout);
+    background polling passes False."""
     token = request.cookies.get(ADMIN_COOKIE)
     if not token:
         return None
@@ -141,7 +144,7 @@ def current_admin_session():
          password_tag()),
     )
     row = db.execute("SELECT * FROM admin_sessions WHERE token_hash = ?", (sha256(token),)).fetchone()
-    if row is not None:
+    if row is not None and refresh:
         db.execute("UPDATE admin_sessions SET last_seen = ? WHERE token_hash = ?", (now, row["token_hash"]))
     db.commit()
     return row

@@ -1,4 +1,4 @@
-"""Event / payment / layout settings stored as key-value pairs."""
+"""Per-event settings (event, payment, access) stored as key-value pairs in event_settings."""
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -8,6 +8,7 @@ from .db import get_db
 
 DEFAULTS = {
     "event_name": "LAN Party",
+    "registration_opens": "",   # empty = draft: never opens until a date is set
     "event_start": "",
     "event_end": "",
     "location": "",
@@ -16,6 +17,7 @@ DEFAULTS = {
     "amount_cents": "2000",
     "reservation_hours": "48",
     "event_code": "",
+    "theme": "default",         # folder name of the theme (see themes.py)
 }
 
 EVENT_CODE_RE = re.compile(r"[A-Z0-9]{4,6}")
@@ -38,12 +40,15 @@ class SettingsError(ValueError):
     pass
 
 
-def load() -> dict:
-    rows = get_db().execute("SELECT key, value FROM settings").fetchall()
+DATE_KEYS = (("registration_opens", "Registration opens"), ("event_start", "Start"), ("event_end", "End"))
+
+
+def from_rows(rows) -> dict:
     stored = {r["key"]: r["value"] for r in rows}
     raw = {k: stored.get(k, v) for k, v in DEFAULTS.items()}
     return {
         "event_name": raw["event_name"],
+        "registration_opens": raw["registration_opens"],
         "event_start": raw["event_start"],
         "event_end": raw["event_end"],
         "location": raw["location"],
@@ -52,7 +57,15 @@ def load() -> dict:
         "amount_cents": int(raw["amount_cents"]),
         "reservation_hours": int(raw["reservation_hours"]),
         "event_code": raw["event_code"],
+        "theme": raw["theme"],
     }
+
+
+def load(event_id: int) -> dict:
+    rows = get_db().execute(
+        "SELECT key, value FROM event_settings WHERE event_id = ?", (event_id,)
+    ).fetchall()
+    return from_rows(rows)
 
 
 def parse_amount(value) -> int:
@@ -84,8 +97,12 @@ def _parse_datetime(value, name) -> str:
     return text
 
 
-def validate_update(data: dict) -> dict:
-    """Validate a partial update; returns the values to store (as strings)."""
+def validate_update(data: dict, event_id: int) -> dict:
+    """Validate a partial update; returns the values to store (as strings).
+
+    Reads the event's stored values and the other events' dates, so call it
+    inside the same ``db.write_transaction()`` as ``save()``.
+    """
     if not isinstance(data, dict):
         raise SettingsError("Expected a JSON object.")
     out = {}
@@ -101,7 +118,7 @@ def validate_update(data: dict) -> dict:
         r"[^@\s]+@[^@\s]+\.[^@\s]+|(https?://)?(www\.)?paypal\.me/\S+", out["paypal_address"]
     ):
         raise SettingsError("PayPal address must be an email address or a paypal.me link.")
-    for key, label in (("event_start", "Start"), ("event_end", "End")):
+    for key, label in DATE_KEYS:
         if key in data:
             out[key] = _parse_datetime(data[key], label)
     if "amount" in data:
@@ -115,26 +132,48 @@ def validate_update(data: dict) -> dict:
                 f"Reservation time must be a whole number of hours between 0 and {MAX_RESERVATION_HOURS}."
             )
         out["reservation_hours"] = str(hours)
+    if "theme" in data:
+        from . import themes
+
+        theme = themes.get(data["theme"])
+        if theme is not None:
+            out["theme"] = theme.id
+        elif data["theme"] != load(event_id)["theme"]:
+            raise SettingsError("This theme does not exist (or has a problem, see the theme list).")
+        # else: the stored theme was removed or broke later. Saving other changes
+        # keeps it (the public page falls back to the default meanwhile).
     if "event_code" in data:
         code = normalize_event_code(data["event_code"])
         if code and not EVENT_CODE_RE.fullmatch(code):
             raise SettingsError("The event code must be 4–6 letters or digits (or empty for no code).")
         out["event_code"] = code
 
-    current = load()
+    current = load(event_id)
+    opens = out.get("registration_opens", current["registration_opens"])
     start = out.get("event_start", current["event_start"])
     end = out.get("event_end", current["event_end"])
     if start and end and datetime.fromisoformat(end) < datetime.fromisoformat(start):
         raise SettingsError("End must not be before start.")
+    if opens and end and datetime.fromisoformat(end) <= datetime.fromisoformat(opens):
+        raise SettingsError("Registration must open before the event ends.")
+    if opens:
+        from . import events
+
+        clash = events.overlapping(event_id, opens, end)
+        if clash is not None:
+            raise SettingsError(
+                f"Registration can only open after the previous event has ended: this overlaps "
+                f"with \"{clash['event_name']}\" ({events.describe_window(clash)})."
+            )
     return out
 
 
-def save(values: dict) -> None:
+def save(values: dict, event_id: int) -> None:
     """Store validated values. Call inside ``db.write_transaction()`` together
     with the ``validate_update()`` that produced them; this does not commit."""
     db = get_db()
     db.executemany(
-        "INSERT INTO settings (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        list(values.items()),
+        "INSERT INTO event_settings (event_id, key, value) VALUES (?, ?, ?) "
+        "ON CONFLICT(event_id, key) DO UPDATE SET value = excluded.value",
+        [(event_id, k, v) for k, v in values.items()],
     )

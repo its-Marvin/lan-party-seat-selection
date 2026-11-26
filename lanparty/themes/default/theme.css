@@ -1,0 +1,9 @@
+/* The default theme is the look defined in static/style.css itself, so there
+   is nothing to override. The two empty blocks mark that it supports both
+   colour modes (every theme must). Copy a fuller theme such as "retro" as a
+   starting point for your own. */
+:root[data-mode="dark"] {
+}
+
+:root[data-mode="light"] {
+}

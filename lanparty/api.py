@@ -12,9 +12,11 @@ import unicodedata
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+from . import events as ev
 from . import layout as lay
 from . import security as sec
 from . import settings as cfg
+from . import themes as th
 from .db import get_db, read_snapshot, write_transaction
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -41,6 +43,7 @@ def _api_error(err: ApiError):
 
 @bp.errorhandler(cfg.SettingsError)
 @bp.errorhandler(lay.LayoutError)
+@bp.errorhandler(ev.EventError)
 def _validation_error(err: ValueError):
     return jsonify(error=str(err)), 400
 
@@ -85,10 +88,28 @@ def enforce_limit(bucket: str, key: str, limit: int, window: float, message: str
         raise ApiError(429, f"{message} Please try again in {human_wait(wait)}.", retry_after=wait)
 
 
+def event_settings(event_id: int) -> dict:
+    cache = g.setdefault("settings_by_event", {})
+    if event_id not in cache:
+        cache[event_id] = cfg.load(event_id)
+    return cache[event_id]
+
+
+def active_event_id() -> int | None:
+    return ev.active_id()
+
+
 def settings() -> dict:
-    if "settings" not in g:
-        g.settings = cfg.load()
-    return g.settings
+    """Settings of the active event (defaults while no event is active)."""
+    event_id = active_event_id()
+    return event_settings(event_id) if event_id is not None else cfg.from_rows([])
+
+
+def require_active_event() -> int:
+    event_id = active_event_id()
+    if event_id is None:
+        raise ApiError(403, "There is no event open for registration right now.")
+    return event_id
 
 
 def utc_iso(dt: datetime) -> str:
@@ -98,8 +119,9 @@ def utc_iso(dt: datetime) -> str:
 # --- event code ----------------------------------------------------------------
 
 def registration_open() -> bool:
-    """Secure by default: without an event code, names stay hidden and registration is closed."""
-    return bool(settings()["event_code"])
+    """Secure by default: without an active event that has an event code, names
+    stay hidden and registration is closed."""
+    return active_event_id() is not None and bool(settings()["event_code"])
 
 
 def check_event_code(value, *, raise_when_limited: bool) -> bool:
@@ -137,15 +159,26 @@ def is_admin_request() -> bool:
 
 @bp.before_request
 def release_expired_reservations():
+    # only the active event's reservations run out; archived events stay as they ended
+    event_id = active_event_id()
+    if event_id is None:
+        return
     hours = settings()["reservation_hours"]
     if hours <= 0:
         return
-    expired_sql = ("SELECT id, name, email, seat FROM users WHERE paid = 0 AND seat IS NOT NULL "
-                   "AND reserved_at IS NOT NULL AND reserved_at <= datetime('now', ?)")
-    window = (f"-{hours} hours",)
+    expired_sql = ("SELECT id, name, email, seat FROM users WHERE event_id = ? AND paid = 0 "
+                   "AND seat IS NOT NULL AND reserved_at IS NOT NULL AND reserved_at <= datetime('now', ?)")
+    window = (event_id, f"-{hours} hours")
     if not get_db().execute(expired_sql, window).fetchone():
         return  # cheap check without taking the write lock
     with write_transaction() as db:
+        # The event may have ended (or its settings changed) while this request
+        # waited for the lock: decide again from fresh values.
+        event = cfg.load(event_id)
+        hours = event["reservation_hours"]
+        if ev.status(event) != "active" or hours <= 0:
+            return
+        window = (event_id, f"-{hours} hours")
         # read the rows (with their seats) and clear them under the same lock
         released = db.execute(expired_sql, window).fetchall()
         db.executemany(
@@ -153,9 +186,9 @@ def release_expired_reservations():
             "reserved_ip_hash = NULL WHERE id = ? AND paid = 0",
             [(r["id"],) for r in released],
         )
-    for r in released:
-        sec.audit("system", "reservation.expired", user_id=r["id"], name=r["name"],
-                  email=r["email"], seat=r["seat"], after_hours=hours)
+        for r in released:
+            sec.record_audit("system", "reservation.expired", user_id=r["id"], name=r["name"],
+                             email=r["email"], seat=r["seat"], after_hours=hours, event_id=event_id)
 
 
 # --- serialisation -------------------------------------------------------
@@ -163,6 +196,7 @@ def release_expired_reservations():
 def public_settings(s: dict) -> dict:
     return {
         "event_name": s["event_name"],
+        "registration_opens": s["registration_opens"],
         "event_start": s["event_start"],
         "event_end": s["event_end"],
         "location": s["location"],
@@ -171,11 +205,15 @@ def public_settings(s: dict) -> dict:
         "amount_cents": s["amount_cents"],
         "reservation_hours": s["reservation_hours"],
         "event_code": s["event_code"],
+        "theme": s["theme"],
     }
 
 
 def reserved_until(row) -> str | None:
-    hours = settings()["reservation_hours"]
+    # reservations only run out while their event is active
+    if row["event_id"] != active_event_id():
+        return None
+    hours = event_settings(row["event_id"])["reservation_hours"]
     if row["paid"] or not row["seat"] or not row["reserved_at"] or hours <= 0:
         return None
     return utc_iso(datetime.fromisoformat(row["reserved_at"]) + timedelta(hours=hours))
@@ -184,6 +222,7 @@ def reserved_until(row) -> str | None:
 def user_dict(row, with_email=True) -> dict:
     data = {
         "id": row["id"],
+        "event_id": row["event_id"],
         "name": row["name"],
         "seat": row["seat"],
         "paid": bool(row["paid"]),
@@ -199,7 +238,7 @@ def user_dict(row, with_email=True) -> dict:
 
 
 def payment_info(user_row) -> dict:
-    s = settings()
+    s = event_settings(user_row["event_id"])
     return {
         "paypal_address": s["paypal_address"],
         "amount_cents": s["amount_cents"],
@@ -210,7 +249,8 @@ def payment_info(user_row) -> dict:
 
 def user_summary(row) -> dict:
     """Identifying fields for audit entries."""
-    return {"user_id": row["id"], "name": row["name"], "email": row["email"], "seat": row["seat"]}
+    return {"user_id": row["id"], "name": row["name"], "email": row["email"], "seat": row["seat"],
+            "event_id": row["event_id"]}
 
 
 # --- participants --------------------------------------------------------
@@ -224,13 +264,16 @@ def issue_token(user_id: int) -> str:
 
 
 def current_user():
+    """The participant this device is logged in as, for the active event only:
+    tokens from earlier events no longer log anyone in."""
     token = request.headers.get("X-User-Token", "")
-    if not token:
+    event_id = active_event_id()
+    if not token or event_id is None:
         return None
     return get_db().execute(
         "SELECT users.* FROM user_tokens JOIN users ON users.id = user_tokens.user_id "
-        "WHERE user_tokens.token_hash = ?",
-        (sec.sha256(token),),
+        "WHERE user_tokens.token_hash = ? AND users.event_id = ?",
+        (sec.sha256(token), event_id),
     ).fetchone()
 
 
@@ -247,6 +290,8 @@ def get_user(user_id: int):
         raise ApiError(404, "User not found.")
     return row
 
+
+ARCHIVED_READ_ONLY = "This event is archived; its participants and seat plan can't be changed any more."
 
 PAID_NO_RELEASE = ("Your payment is already confirmed, so the seat can't be given up here. "
                    "You can switch to another free seat, or ask an admin to cancel.")
@@ -270,12 +315,20 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False, admin
     exactly the seats this call changed, even when other requests run concurrently.
     """
     ip_key = sec.ip_hash() if by_participant else None  # may write; keep outside the transaction
-    hours = settings()["reservation_hours"]
-    window = f"-{hours} hours" if hours > 0 else "-1000 years"
     with write_transaction() as db:
         user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             raise ApiError(404, "User not found.")
+        event_id = user["event_id"]
+        # read fresh under the lock: the dates may just have changed
+        event = cfg.load(event_id)
+        state = ev.status(event)
+        if by_participant and state != "active":
+            raise ApiError(403, "Registration for this event is closed.")
+        if state == "archived":
+            raise ApiError(409, ARCHIVED_READ_ONLY)
+        hours = event["reservation_hours"]
+        window = f"-{hours} hours" if hours > 0 else "-1000 years"
         if by_participant and user["paid"] and seat_value is None:
             # giving up a paid seat means a refund: that stays with the admins
             raise ApiError(409, PAID_NO_RELEASE)
@@ -283,13 +336,14 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False, admin
             db.execute("UPDATE users SET seat = NULL, seat_selected_at = NULL WHERE id = ?", (user_id,))
             return _audit_seat_change(db, user, by_participant, admin)
         seat = lay.normalize_seat(seat_value)
-        if seat is None or seat not in set(lay.seat_ids(lay.load())):
+        if seat is None or seat not in set(lay.seat_ids(lay.load(event_id))):
             raise ApiError(400, "This seat does not exist.")
         if by_participant and user["seat"] is None and not user["paid"]:
             # new unpaid reservation (switching seats does not count)
             pending = db.execute(
-                "SELECT COUNT(*) FROM users WHERE paid = 0 AND seat IS NOT NULL AND reserved_ip_hash = ?",
-                (ip_key,),
+                "SELECT COUNT(*) FROM users WHERE event_id = ? AND paid = 0 AND seat IS NOT NULL "
+                "AND reserved_ip_hash = ?",
+                (event_id, ip_key),
             ).fetchone()[0]
             if pending >= conf("MAX_PENDING_PER_IP"):
                 raise ApiError(429, "Too many unpaid reservations from your network. "
@@ -325,11 +379,19 @@ def _audit_seat_change(db, before, by_participant: bool, admin: str | None):
 
 @bp.get("/info")
 def info():
+    event_id = active_event_id()
     data = public_settings(settings())
     data.pop("event_code")
+    data["active"] = event_id is not None
     data["registration_open"] = registration_open()
-    data["seat_count"] = len(lay.seat_ids(lay.load()))
+    data["seat_count"] = len(lay.seat_ids(lay.load(event_id))) if event_id is not None else 0
     data["login_link_hours"] = conf("LOGIN_CODE_HOURS")
+    # the theme /theme.css resolves to (falls back like it), so open pages can follow changes
+    data["theme"] = (th.get(data["theme"]) or th.get(th.DEFAULT_THEME)).id
+    data["upcoming"] = [
+        {key: e[key] for key in ("event_name", "registration_opens", "event_start", "event_end", "location")}
+        for e in ev.upcoming()
+    ]
     return jsonify(data)
 
 
@@ -340,15 +402,24 @@ def seats():
     # show occupied seats as free or people in the wrong group. The checks below
     # write (rate limits, session refresh), so they run after the snapshot.
     with read_snapshot() as db:
-        layout = lay.load()
-        rows = db.execute("SELECT seat, name, paid FROM users WHERE seat IS NOT NULL").fetchall()
+        event_id = active_event_id()
+        if event_id is None:
+            return jsonify(layout=None, seats=[], names_visible=False, event_code_ok=False)
+        layout = lay.load(event_id)
+        rows = db.execute("SELECT seat, name, paid FROM users WHERE event_id = ? AND seat IS NOT NULL",
+                          (event_id,)).fetchall()
         me = current_user()
-    taken = {r["seat"]: r for r in rows}
     # Having a valid registration code and being allowed to see names are
     # different things: admins see names but still need the code to register.
     header = request.headers.get("X-Event-Code")
     code_ok = me is None and bool(header) and check_event_code(header, raise_when_limited=False)
     show_names = me is not None or code_ok or is_admin_request()
+    result = seat_list(layout, rows, me["seat"] if me is not None else None, show_names)
+    return jsonify(layout=layout, seats=result, names_visible=show_names, event_code_ok=code_ok)
+
+
+def seat_list(layout: dict, occupants, my_seat: str | None, show_names: bool) -> list[dict]:
+    taken = {r["seat"]: r for r in occupants}
     result = []
     for seat in lay.seat_ids(layout):
         occupant = taken.get(seat)
@@ -358,12 +429,12 @@ def seats():
             entry = {
                 "id": seat,
                 "status": "paid" if occupant["paid"] else "reserved",
-                "mine": me is not None and me["seat"] == seat,
+                "mine": my_seat == seat,
             }
             if show_names:
                 entry["name"] = occupant["name"]
             result.append(entry)
-    return jsonify(layout=layout, seats=result, names_visible=show_names, event_code_ok=code_ok)
+    return result
 
 
 @bp.post("/event-code")
@@ -394,17 +465,18 @@ def register():
     if len(email) > 200 or not EMAIL_RE.match(email):
         raise ApiError(400, "Please enter a valid email address.")
     token = sec.new_secret()
-    db = get_db()
     try:
-        cur = db.execute(
-            "INSERT INTO users (name, email, token_hash) VALUES (?, ?, ?)",
-            (name, email, sec.sha256(token)),
-        )
-        db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)",
-                   (sec.sha256(token), cur.lastrowid))
-        db.commit()
+        with write_transaction() as db:
+            event_id = require_active_event()
+            if ev.status(cfg.load(event_id)) != "active":  # dates changed in the meantime
+                raise ApiError(403, "There is no event open for registration right now.")
+            cur = db.execute(
+                "INSERT INTO users (event_id, name, email, token_hash) VALUES (?, ?, ?, ?)",
+                (event_id, name, email, sec.sha256(token)),
+            )
+            db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)",
+                       (sec.sha256(token), cur.lastrowid))
     except sqlite3.IntegrityError:
-        db.rollback()
         raise ApiError(
             409, "This email address is already registered. Open a login link from a device "
                  "where you are logged in, or ask an admin for one."
@@ -449,14 +521,16 @@ def create_login_code(user_id: int) -> tuple[str, str]:
     return code, utc_iso(datetime.fromtimestamp(expires, timezone.utc).replace(tzinfo=None))
 
 
-def lookup_login_code(code) :
-    if not isinstance(code, str) or not 10 <= len(code) <= 100:
+def lookup_login_code(code):
+    """A valid login code of a participant of the active event."""
+    event_id = active_event_id()
+    if not isinstance(code, str) or not 10 <= len(code) <= 100 or event_id is None:
         return None
     return get_db().execute(
         "SELECT users.*, login_codes.code_hash FROM login_codes "
         "JOIN users ON users.id = login_codes.user_id "
-        "WHERE login_codes.code_hash = ? AND login_codes.expires_at >= ?",
-        (sec.sha256(code), time.time()),
+        "WHERE login_codes.code_hash = ? AND login_codes.expires_at >= ? AND users.event_id = ?",
+        (sec.sha256(code), time.time(), event_id),
     ).fetchone()
 
 
@@ -505,7 +579,9 @@ def admin_required(view):
     def wrapper(*args, **kwargs):
         if not conf("ADMIN_PASSWORD"):
             raise ApiError(401, "Admin login required.")
-        session = sec.current_admin_session()
+        # background polling (X-Background: 1) must not count as admin activity,
+        # or an unattended tab would never reach the idle timeout
+        session = sec.current_admin_session(refresh=request.headers.get("X-Background") != "1")
         if session is None:
             raise ApiError(401, "Admin login required.")
         g.admin = session
@@ -515,6 +591,39 @@ def admin_required(view):
 
 def actor() -> str:
     return g.admin["actor"]
+
+
+def admin_event_id() -> int:
+    """The event an admin request is about: ``?event=<id>``, else the default one."""
+    raw = request.args.get("event")
+    if raw is None:
+        return ev.default_admin_id()
+    if not raw.isdigit() or len(raw) > 9:
+        raise ApiError(400, "'event' must be an event id.")
+    if ev.get(int(raw)) is None:
+        raise ApiError(404, "Event not found.")
+    return int(raw)
+
+
+def require_not_archived(event_id: int) -> None:
+    """Call inside a write transaction (the status is read fresh)."""
+    if ev.status(cfg.load(event_id)) == "archived":
+        raise ApiError(409, ARCHIVED_READ_ONLY)
+
+
+def event_summary(e: dict) -> dict:
+    db = get_db()
+    counts = db.execute(
+        "SELECT COUNT(*) AS registered, COUNT(seat) AS seated, COALESCE(SUM(paid), 0) AS paid "
+        "FROM users WHERE event_id = ?", (e["id"],)).fetchone()
+    return {
+        "id": e["id"],
+        "status": e["status"],
+        **{key: e[key] for key in ("event_name", "registration_opens", "event_start", "event_end", "location")},
+        "registered": counts["registered"],
+        "seated": counts["seated"],
+        "paid": counts["paid"],
+    }
 
 
 def clean_actor_name(value) -> str:
@@ -592,8 +701,65 @@ def admin_audit():
 @bp.get("/admin/users")
 @admin_required
 def admin_users():
-    rows = get_db().execute("SELECT * FROM users ORDER BY created_at, id").fetchall()
-    return jsonify(users=[user_dict(r) for r in rows])
+    event_id = admin_event_id()
+    rows = get_db().execute("SELECT * FROM users WHERE event_id = ? ORDER BY created_at, id",
+                            (event_id,)).fetchall()
+    return jsonify(event_id=event_id, users=[user_dict(r) for r in rows])
+
+
+@bp.get("/admin/seats")
+@admin_required
+def admin_seats():
+    """Seat plan of any event, with names (the admin counterpart of /api/seats)."""
+    event_id = admin_event_id()
+    with read_snapshot() as db:
+        layout = lay.load(event_id)
+        rows = db.execute("SELECT seat, name, paid FROM users WHERE event_id = ? AND seat IS NOT NULL",
+                          (event_id,)).fetchall()
+    return jsonify(event_id=event_id, layout=layout, seats=seat_list(layout, rows, None, True),
+                   names_visible=True)
+
+
+@bp.get("/admin/themes")
+@admin_required
+def admin_themes():
+    found = th.discover().values()
+    return jsonify(
+        themes=[t.public() for t in found if t.problem is None],
+        problems=[{"id": t.id, "builtin": t.builtin, "problem": t.problem} for t in found if t.problem],
+        themes_dir=str(th.custom_dir()),
+    )
+
+
+@bp.get("/admin/events")
+@admin_required
+def admin_events():
+    with read_snapshot():
+        events = [event_summary(e) for e in ev.load_all()]
+    return jsonify(events=events, active_id=next((e["id"] for e in events if e["status"] == "active"), None),
+                   default_id=ev.default_admin_id(), timezone=ev.timezone_name() or None)
+
+
+@bp.post("/admin/events")
+@admin_required
+def admin_create_event():
+    copy_from = json_body().get("copy_from")
+    if copy_from is not None and (isinstance(copy_from, bool) or not isinstance(copy_from, int)):
+        raise ApiError(400, "'copy_from' must be an event id or null.")
+    with write_transaction():
+        event_id = ev.create(copy_from)
+    sec.audit(actor(), "event.created", event_id=event_id, copied_from=copy_from)
+    return jsonify(event=event_summary(ev.get(event_id))), 201
+
+
+@bp.delete("/admin/events/<int:event_id>")
+@admin_required
+def admin_delete_event(event_id):
+    with write_transaction():
+        deleted = ev.delete(event_id)
+    sec.audit(actor(), "event.deleted", event_id=event_id, name=deleted["event_name"],
+              status=deleted["status"], participants=deleted["participants"])
+    return jsonify(ok=True)
 
 
 @bp.post("/admin/users/<int:user_id>/paid")
@@ -603,19 +769,20 @@ def admin_set_paid(user_id):
     paid = json_body().get("paid")
     if not isinstance(paid, bool):
         raise ApiError(400, "'paid' must be true or false.")
-    db = get_db()
     # The confirmed amount is stored with the payment, so later fee changes don't
     # rewrite what was actually received. Revoking a payment starts a fresh
     # reservation window. Only a real state change is applied (and audited).
-    changed = db.execute(
-        "UPDATE users SET paid = ?, paid_at = CASE WHEN ? THEN datetime('now') END, "
-        "paid_amount_cents = CASE WHEN ? THEN ? END, "
-        "reserved_at = CASE WHEN ? THEN reserved_at "
-        "                   WHEN seat IS NOT NULL THEN datetime('now') END "
-        "WHERE id = ? AND paid != ?",
-        (int(paid), int(paid), int(paid), settings()["amount_cents"], int(paid), user_id, int(paid)),
-    ).rowcount
-    db.commit()
+    with write_transaction() as db:
+        require_not_archived(user["event_id"])
+        amount = cfg.load(user["event_id"])["amount_cents"]
+        changed = db.execute(
+            "UPDATE users SET paid = ?, paid_at = CASE WHEN ? THEN datetime('now') END, "
+            "paid_amount_cents = CASE WHEN ? THEN ? END, "
+            "reserved_at = CASE WHEN ? THEN reserved_at "
+            "                   WHEN seat IS NOT NULL THEN datetime('now') END "
+            "WHERE id = ? AND paid != ?",
+            (int(paid), int(paid), int(paid), amount, int(paid), user_id, int(paid)),
+        ).rowcount
     if changed:
         sec.audit(actor(), "payment.confirmed" if paid else "payment.revoked", **user_summary(user))
     return jsonify(user=user_dict(get_user(user_id)))
@@ -635,6 +802,8 @@ def admin_move(user_id):
 @admin_required
 def admin_login_link(user_id):
     user = get_user(user_id)
+    if user["event_id"] != active_event_id():
+        raise ApiError(409, "Login links only work for participants of the active event.")
     code, expires = create_login_code(user_id)
     sec.audit(actor(), "user.login_link_created", **user_summary(user))
     return jsonify(code=code, expires_at=expires)
@@ -654,53 +823,61 @@ def admin_remove(user_id):
 @bp.get("/admin/settings")
 @admin_required
 def admin_get_settings():
-    return jsonify(public_settings(settings()))
+    event_id = admin_event_id()
+    return jsonify(public_settings(event_settings(event_id)) | {"event_id": event_id})
 
 
 @bp.put("/admin/settings")
 @admin_required
 def admin_put_settings():
     data = json_body()
+    event_id = admin_event_id()
     # Validation reads stored values (e.g. the start date when only the end
-    # changes); hold the write lock from that read until the save.
+    # changes) and the other events' dates; hold the write lock from that read
+    # until the save. Archived events stay editable here, so a wrong end date
+    # can be corrected.
     with write_transaction():
-        before = cfg.load()
-        cfg.save(cfg.validate_update(data))
-        after = cfg.load()
-    g.pop("settings", None)
+        before = cfg.load(event_id)
+        cfg.save(cfg.validate_update(data, event_id), event_id)
+        after = cfg.load(event_id)
+    g.pop("settings_by_event", None)
+    g.pop("active_event_id", None)
     changes = {}
     for key, old in before.items():
         new = after[key]
         if old != new:
             changes[key] = "(changed)" if key == "description" else [old, new]
     if changes:
-        sec.audit(actor(), "settings.changed", **changes)
-    return jsonify(public_settings(after))
+        sec.audit(actor(), "settings.changed", event_id=event_id, **changes)
+    return jsonify(public_settings(after) | {"event_id": event_id})
 
 
 @bp.get("/admin/layout")
 @admin_required
 def admin_get_layout():
-    return jsonify(lay.load())
+    return jsonify(lay.load(admin_event_id()))
 
 
 @bp.put("/admin/layout")
 @admin_required
 def admin_put_layout():
     new = lay.validate(json_body())
+    event_id = admin_event_id()
     # Read the current layout and occupants and save under one write lock, so no
     # seat can be reserved in between (participants' seat changes use the same lock).
     with write_transaction() as db:
+        require_not_archived(event_id)
         occupants = db.execute(
-            "SELECT seat, name FROM users WHERE seat IS NOT NULL ORDER BY seat"
+            "SELECT seat, name FROM users WHERE event_id = ? AND seat IS NOT NULL ORDER BY seat",
+            (event_id,),
         ).fetchall()
-        moves, lost = lay.plan_seat_moves(lay.load(), new, [r["seat"] for r in occupants])
+        moves, lost = lay.plan_seat_moves(lay.load(event_id), new, [r["seat"] for r in occupants])
         if lost:
             who = ", ".join(f"{r['seat']} ({r['name']})" for r in occupants if r["seat"] in lost)
             raise ApiError(
                 409, f"This layout would remove occupied seats: {who}. Move those people first."
             )
-        lay.save(new, moves)
-    sec.audit(actor(), "layout.saved", groups=len(new["groups"]), items=len(new["items"]),
-              seats=len(lay.seat_ids(new)), renumbered=moves)
-    return jsonify(layout=lay.load(), moved=moves)
+        lay.save(new, moves, event_id)
+    sec.audit(actor(), "layout.saved", event_id=event_id, groups=len(new["groups"]),
+              items=len(new["items"]), seats=len(lay.seat_ids(new)), renumbered=moves)
+    return jsonify(event_id=event_id, layout=lay.load(event_id), moved=moves)
