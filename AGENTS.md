@@ -22,7 +22,7 @@ Requirements from the owner: **no Java**, tests and README required.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest -q                                   # ~227 tests, ~3–4 s
+.venv/bin/pytest -q                                   # ~293 tests, ~4 s
 ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (HOST/PORT env)
 ```
 
@@ -55,7 +55,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
 | `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
 | `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
-| `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2` |
+| `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
 
 ## Rules that must not break
 
@@ -183,16 +183,17 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 
 ## Current state (2026-11-26)
 
-- PR #1 (the whole app plus three review rounds) is **merged** into `main`.
-- Open PRs form a **stack**; merge them in order (each later PR's base then moves to `main`):
-  1. #2 `feature/mobile-theme-self-service` → `main`: mobile layout, paid seat switching,
-     Auto/Light/Dark, 7-day login links
-  2. #3 `feature/multi-event` → #2: several events (draft/upcoming/active/archived), `TIMEZONE`
-  3. #4 `feature/event-themes` → #3: per-event themes, `THEMES_DIR`, retro theme, `THEMES.md`
-  4. `feature/i18n` → #4: English/German for both pages and server messages
-- Copilot reviews are still pending for all of them.
-- The local branch `feature/seat-registration-app` is stale (merged and deleted on the remote)
-  and can be deleted.
+- Everything is merged into `main`: #1 (the app), #2 (mobile layout, paid seat switching,
+  Auto/Light/Dark, 7-day login links), #3 (several events, `TIMEZONE`), #4 (per-event themes,
+  `THEMES_DIR`, retro theme, `THEMES.md`) and #5 (English/German). After the stack went wrong
+  (see below), #3 and #4 reached `main` through #7, and #5 through #8. All Copilot review
+  threads are resolved.
+- No feature branches are left; `main` is the only branch.
+- Stacked PRs, lessons learned: merge them bottom-up, and delete each head branch right after
+  its merge, so GitHub moves the next PR's base to `main`. A PR merged into an already-merged
+  base never reaches `main`. PRs in a GitHub *stack* can't have their base changed, and
+  `gh pr merge` / the normal merge API refuse them; use
+  `PUT /repos/{owner}/{repo}/pulls/{n}/merge-async` (with `sha` pinned) or the stack view on GitHub.
 
 ## Ideas not done yet (only if asked)
 
