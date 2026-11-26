@@ -386,6 +386,8 @@ def info():
     data["registration_open"] = registration_open()
     data["seat_count"] = len(lay.seat_ids(lay.load(event_id))) if event_id is not None else 0
     data["login_link_hours"] = conf("LOGIN_CODE_HOURS")
+    # the theme /theme.css resolves to (falls back like it), so open pages can follow changes
+    data["theme"] = (th.get(data["theme"]) or th.get(th.DEFAULT_THEME)).id
     data["upcoming"] = [
         {key: e[key] for key in ("event_name", "registration_opens", "event_start", "event_end", "location")}
         for e in ev.upcoming()

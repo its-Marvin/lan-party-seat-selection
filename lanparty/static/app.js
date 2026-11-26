@@ -44,8 +44,20 @@ function formatRange(start, end) {
   return formatDateTime(start) + (end ? " – " + formatDateTime(end) : "");
 }
 
+// Theme loaded with the page via /theme.css; open pages follow later changes
+// (another event opens, an admin picks another theme). Not during a ?theme= preview.
+let appliedTheme = null;
+const themePreview = new URLSearchParams(location.search).has("theme");
+
+function syncTheme(theme) {
+  if (themePreview || theme === appliedTheme) return;
+  if (appliedTheme !== null) $("event-theme").href = `/themes/${encodeURIComponent(theme)}/theme.css`;
+  appliedTheme = theme;
+}
+
 function renderInfo() {
   const info = state.info;
+  syncTheme(info.theme);
   const next = info.upcoming[0];
   const title = info.active ? info.event_name : "LAN Party";
   document.title = `${title} – Seat Registration`;

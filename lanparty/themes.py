@@ -22,8 +22,10 @@ from flask import current_app
 DEFAULT_THEME = "default"
 THEME_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 MAX_CSS_BYTES = 512 * 1024
-MODE_BLOCK_RE = {mode: re.compile(r"\[\s*data-mode\s*=\s*([\"']?)" + mode + r"\1\s*\]")
+# a rule whose selector targets the mode, e.g. :root[data-mode="dark"] { … }
+MODE_BLOCK_RE = {mode: re.compile(r"\[\s*data-mode\s*=\s*([\"']?)" + mode + r"\1\s*\][^{};]*\{")
                  for mode in ("dark", "light")}
+CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 # files a theme may serve besides theme.css
 ASSET_TYPES = {
     ".css": "text/css", ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf",
@@ -68,16 +70,23 @@ def _read_theme(folder: Path, builtin: bool) -> Theme:
             problem = f"theme.json is not valid JSON ({exc})."
     css = folder / "theme.css"
     if problem is None:
-        if not css.is_file():
-            problem = "theme.css is missing."
-        elif css.stat().st_size > MAX_CSS_BYTES:
-            problem = f"theme.css is larger than {MAX_CSS_BYTES // 1024} KB."
-        else:
-            text = css.read_text(encoding="utf-8", errors="replace")
-            missing = [mode for mode, pattern in MODE_BLOCK_RE.items() if not pattern.search(text)]
-            if missing:
-                problem = ("theme.css must style both colour modes; missing "
-                           + " and ".join(f':root[data-mode="{m}"]' for m in missing) + ".")
+        try:
+            if not css.is_file():
+                problem = "theme.css is missing."
+            elif css.stat().st_size > MAX_CSS_BYTES:
+                problem = f"theme.css is larger than {MAX_CSS_BYTES // 1024} KB."
+            else:
+                text = css.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            # e.g. wrong permissions: only this theme is unusable, the others keep working
+            problem = f"theme.css can't be read ({exc.strerror or exc})."
+    if problem is None:
+        # a mode that only appears in a comment doesn't count
+        text = CSS_COMMENT_RE.sub("", text)
+        missing = [mode for mode, pattern in MODE_BLOCK_RE.items() if not pattern.search(text)]
+        if missing:
+            problem = ("theme.css must style both colour modes; missing "
+                       + " and ".join(f':root[data-mode="{m}"]' for m in missing) + ".")
     return Theme(theme_id, name, description, builtin, folder, problem)
 
 

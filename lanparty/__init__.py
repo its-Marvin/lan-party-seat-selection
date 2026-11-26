@@ -69,6 +69,10 @@ def create_app(config: dict | None = None) -> Flask:
             "(set ALLOW_WEAK_ADMIN_PASSWORD=1 for local development only)."
         )
 
+    # absolute, so listing themes (relative to the working directory) and serving
+    # their files (send_from_directory, relative to the app) use the same folder
+    app.config["THEMES_DIR"] = str(Path(app.config["THEMES_DIR"]).resolve())
+
     if app.config["TIMEZONE"]:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
         try:
