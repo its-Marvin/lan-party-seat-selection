@@ -412,7 +412,12 @@ document.addEventListener("admin-auth-required", () => checkSession().catch(() =
 document.addEventListener("layout-saved", () => loadUsers().then(loadAudit).catch(() => {}));
 // the status of an event changes with the clock (registration opens, event ends)
 setInterval(() => {
-  if (!$("admin-area").hidden) loadEvents({ background: true }).catch(() => {});
+  if ($("admin-area").hidden) return;
+  loadEvents({ background: true }).catch((err) => {
+    // session ended (idle timeout, logout elsewhere, password change): hide the
+    // admin data; checkSession() keeps unsaved work and offers sign-in
+    if (err.status === 401) checkSession().catch(() => {});
+  });
 }, 60000);
 
 document.addEventListener("DOMContentLoaded", () => {

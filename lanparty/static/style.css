@@ -439,6 +439,7 @@ dialog .actions { margin-top: 1rem; }
     grid-template-columns: 6.5rem minmax(0, 1fr);
     gap: .5rem;
     overflow-wrap: anywhere;
+    white-space: normal;   /* also for .nowrap cells (audit timestamps): a card has no room for it */
   }
   table.stack td::before { content: attr(data-label); color: var(--muted); font: .8rem/1.5 var(--font-body); }
   table.stack td.actions-cell { display: flex; padding-top: .5rem; }
