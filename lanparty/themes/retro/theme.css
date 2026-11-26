@@ -3,7 +3,7 @@
  * Every theme overrides the colour tokens of static/style.css in two blocks,
  * one per colour mode. Foreground tokens (--text, --muted, --on-…, …-text)
  * keep a contrast of at least 4.5:1 against the backgrounds they are used on
- * (checked by tests/test_themes.py).
+ * (checked by tests/test_themes.py), also where the scanlines darken them.
  */
 
 /* ---- dark: glowing green on black ---------------------------------------- */
@@ -26,7 +26,7 @@
   --on-mine: #001a1f;
   --mine-ring: #b3f7ff;
   --danger: #ff4d4d;
-  --danger-text: #ff6b6b;
+  --danger-text: #ff8a8a;     /* 5.3:1 on --card even under the scanlines */
   --success-text: #66ff99;
   --warning-text: #ffc433;
   --banner-border: #a67c00;

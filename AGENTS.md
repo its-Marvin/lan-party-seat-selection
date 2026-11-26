@@ -137,7 +137,8 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   Fonts and corner radii go through `--font-body`, `--font-mono` and `--radius-scale`.
   Hover states count too: primary buttons use `--accent-hover`, not the brightness filter that
   other buttons get (it pushed white-on-accent below 4.5:1 in light mode).
-- Themes: the public page links `/theme.css` (302 to the active event's theme folder). The admin
+- Themes: the public page links `/theme.css` (`@import` of the active event's theme plus
+  `--lp-theme: "<id>"`, which `app.js` reads to know what it got). The admin
   page doesn't load event themes. Theme files are served only with allowlisted extensions.
 - Public-page polling skips unchanged panels (fingerprints in `rendered`) and keeps focus via
   `data-focus-key` and `keepFocus()`. Keep this when re-rendering.

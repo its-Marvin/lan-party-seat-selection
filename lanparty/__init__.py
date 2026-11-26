@@ -4,7 +4,7 @@ import os
 import secrets
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, redirect, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -100,14 +100,17 @@ def create_app(config: dict | None = None) -> Flask:
 
     @app.get("/theme.css")
     def event_theme():
-        """Redirect to the active event's theme, so its relative URLs (fonts,
-        images) resolve inside the theme folder."""
+        """The active event's theme. It is imported (not inlined or redirected to),
+        so relative URLs in it (fonts, images) resolve inside the theme folder,
+        and --lp-theme tells app.js which theme this page actually got."""
         from .settings import load
 
         event_id = events.active_id()
         wanted = load(event_id)["theme"] if event_id is not None else themes.DEFAULT_THEME
         theme = themes.get(wanted) or themes.get(themes.DEFAULT_THEME)
-        resp = redirect(f"/themes/{theme.id}/theme.css", 302)
+        # theme ids are [a-z0-9_-] only, safe inside a CSS string
+        css = f'@import url("/themes/{theme.id}/theme.css");\n:root {{ --lp-theme: "{theme.id}"; }}\n'
+        resp = app.response_class(css, mimetype="text/css")
         resp.headers["Cache-Control"] = "no-store"
         return resp
 

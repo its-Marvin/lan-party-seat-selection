@@ -86,6 +86,14 @@ def test_themes_endpoint_needs_admin(app):
     assert app.test_client().get("/api/admin/themes").status_code == 401
 
 
+def served_theme(client):
+    """Theme id /theme.css imports; it must also announce it as --lp-theme."""
+    css = client.get("/theme.css").get_data(as_text=True)
+    imported = re.fullmatch(r'@import url\("/themes/([a-z0-9_-]+)/theme\.css"\);\n:root \{ --lp-theme: "([a-z0-9_-]+)"; \}\n', css)
+    assert imported and imported.group(1) == imported.group(2), css
+    return imported.group(1)
+
+
 # --- choosing a theme per event ---------------------------------------------------
 
 def test_theme_is_a_per_event_setting(admin, themes_dir):
@@ -105,15 +113,16 @@ def test_theme_is_a_per_event_setting(admin, themes_dir):
 def test_theme_css_follows_the_active_event(app, admin, themes_dir):
     client = app.test_client()
     res = client.get("/theme.css")
-    assert res.status_code == 302 and res.headers["Location"].endswith("/themes/default/theme.css")
+    assert res.status_code == 200 and res.mimetype == "text/css"
+    assert served_theme(client) == "default"
     assert res.headers["Cache-Control"] == "no-store"
     admin.put("/api/admin/settings", json={"theme": "retro"})
-    assert client.get("/theme.css").headers["Location"].endswith("/themes/retro/theme.css")
+    assert served_theme(client) == "retro"
     # a theme that disappears later falls back to the default one
     add_theme(themes_dir, "gone")
     admin.put("/api/admin/settings", json={"theme": "gone"})
     (themes_dir / "gone" / "theme.css").unlink()
-    assert client.get("/theme.css").headers["Location"].endswith("/themes/default/theme.css")
+    assert served_theme(client) == "default"
 
 
 def test_theme_files_are_served_safely(app, themes_dir):
@@ -193,6 +202,30 @@ def test_builtin_themes_have_readable_text(theme, mode):
     palette = theme_palette(theme, mode)
     failures = [f"--{fg} on --{bg}: {contrast(palette[fg], palette[bg]):.2f}"
                 for fg, bg in TEXT_PAIRS if contrast(palette[fg], palette[bg]) < 4.5]
+    assert failures == []
+
+
+def darken(hex_colour: str, alpha: float) -> str:
+    """The colour seen through a black overlay with this opacity."""
+    h = hex_colour.strip().lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return "#" + "".join(f"{round(int(h[i:i + 2], 16) * (1 - alpha)):02x}" for i in (0, 2, 4))
+
+
+@pytest.mark.parametrize("theme", sorted(p.name for p in BUILTIN.iterdir() if p.is_dir()))
+@pytest.mark.parametrize("mode", ["dark", "light"])
+def test_text_stays_readable_under_a_scanline_overlay(theme, mode):
+    """A black overlay (the retro theme's --scanline rows) darkens text and background
+    alike, which lowers their contrast; the covered rows must still reach 4.5:1."""
+    palette = theme_palette(theme, mode)
+    overlay = re.fullmatch(r"rgba\(\s*0\s*,\s*0\s*,\s*0\s*,\s*([\d.]+)\s*\)", palette.get("scanline", "").strip())
+    if not overlay:
+        return
+    alpha = float(overlay.group(1))
+    failures = [f"--{fg} on --{bg}: {contrast(darken(palette[fg], alpha), darken(palette[bg], alpha)):.2f}"
+                for fg, bg in TEXT_PAIRS
+                if contrast(darken(palette[fg], alpha), darken(palette[bg], alpha)) < 4.5]
     assert failures == []
 
 

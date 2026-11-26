@@ -44,14 +44,24 @@ function formatRange(start, end) {
   return formatDateTime(start) + (end ? " – " + formatDateTime(end) : "");
 }
 
-// Theme loaded with the page via /theme.css; open pages follow later changes
-// (another event opens, an admin picks another theme). Not during a ?theme= preview.
+// Open pages follow theme changes (another event opens, an admin picks another
+// theme). Not during a ?theme= preview.
 let appliedTheme = null;
 const themePreview = new URLSearchParams(location.search).has("theme");
 
+/** The theme /theme.css gave this page (it sets --lp-theme), or null if unknown. */
+function loadedTheme() {
+  const value = getComputedStyle(document.documentElement).getPropertyValue("--lp-theme").trim();
+  return value.replace(/^["']|["']$/g, "") || null;
+}
+
 function syncTheme(theme) {
-  if (themePreview || theme === appliedTheme) return;
-  if (appliedTheme !== null) $("event-theme").href = `/themes/${encodeURIComponent(theme)}/theme.css`;
+  if (themePreview) return;
+  // compare with what the page really got, not with the first /api/info answer:
+  // the theme may have changed between loading the stylesheet and that answer
+  if (appliedTheme === null) appliedTheme = loadedTheme();
+  if (theme === appliedTheme) return;
+  $("event-theme").href = `/themes/${encodeURIComponent(theme)}/theme.css`;
   appliedTheme = theme;
 }
 
