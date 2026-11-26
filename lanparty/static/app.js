@@ -19,12 +19,10 @@ async function handleLoginLink() {
     if (getToken()) {
       await loadMe();
       if (state.me && state.me.id === target.user_id) {
-        showMessage($("me-msg"), "You are already logged in on this device – the login link was not used.", "info");
+        showMessage($("me-msg"), t("pub.loginLink.alreadyIn"), "info");
         return;
       }
-      if (state.me && !confirm(
-        `This browser is logged in as "${state.me.name}".\n\n` +
-        `The login link belongs to "${target.name}". Switch to that account?`)) {
+      if (state.me && !confirm(t("pub.loginLink.switch", { current: state.me.name, target: target.name }))) {
         return;
       }
     }
@@ -70,29 +68,28 @@ function renderInfo() {
   syncTheme(info.theme);
   const next = info.upcoming[0];
   const title = info.active ? info.event_name : "LAN Party";
-  document.title = `${title} – Seat Registration`;
+  document.title = t("pub.pageTitle", { name: title });
   $("event-name").textContent = title;
   const facts = $("event-facts");
   facts.replaceChildren();
   if (info.active) {
-    if (info.event_start) facts.append(el("li", {}, el("strong", {}, "When: "), formatRange(info.event_start, info.event_end)));
-    if (info.location) facts.append(el("li", {}, el("strong", {}, "Where: "), info.location));
-    facts.append(el("li", {}, el("strong", {}, "Fee: "), formatMoney(info.amount_cents)));
-    facts.append(el("li", {}, el("strong", {}, "Seats: "), String(info.seat_count)));
+    if (info.event_start) facts.append(el("li", {}, el("strong", {}, t("pub.facts.when")), formatRange(info.event_start, info.event_end)));
+    if (info.location) facts.append(el("li", {}, el("strong", {}, t("pub.facts.where")), info.location));
+    facts.append(el("li", {}, el("strong", {}, t("pub.facts.fee")), formatMoney(info.amount_cents)));
+    facts.append(el("li", {}, el("strong", {}, t("pub.facts.seats")), String(info.seat_count)));
   }
 
   $("no-event-card").hidden = info.active;
   $("seat-card").hidden = !info.active;
   $("no-event-text").textContent = next
-    ? `Registration for ${next.event_name} opens ${formatDateTime(next.registration_opens)}.`
-    : "There's no event open for registration at the moment. Check back later!";
+    ? t("pub.noEvent.next", { name: next.event_name, date: formatDateTime(next.registration_opens) })
+    : t("pub.noEvent.text");
   renderUpcoming(info.upcoming);
 
-  const hours = info.login_link_hours;
-  if (hours) {
-    $("login-link-validity").textContent = hours % 24 === 0
-      ? `${hours / 24} day${hours === 24 ? "" : "s"}` : `${hours} hour${hours === 1 ? "" : "s"}`;
-  }
+  const hours = info.login_link_hours || 168;
+  const validity = hours % 24 === 0
+    ? t("pub.loginLink.days", { count: hours / 24 }) : t("pub.loginLink.hours", { count: hours });
+  $("login-link-intro").textContent = t("pub.loginLink.intro", { validity });
 
   $("about").hidden = !info.active || !info.description;
   $("event-description").textContent = info.description;
@@ -104,7 +101,7 @@ function renderUpcoming(upcoming) {
     el("strong", {}, e.event_name),
     e.event_start ? el("span", {}, formatRange(e.event_start, e.event_end)) : null,
     e.location ? el("span", { class: "muted" }, e.location) : null,
-    el("span", { class: "small muted" }, `Registration opens ${formatDateTime(e.registration_opens)}`),
+    el("span", { class: "small muted" }, t("pub.upcoming.opens", { date: formatDateTime(e.registration_opens) })),
   )));
 }
 
@@ -135,26 +132,25 @@ function renderMe() {
     el("p", {}, el("strong", {}, me.name), " ", el("span", { class: "muted" }, `<${me.email}>`)),
   );
   if (!me.seat) {
-    details.append(el("p", {}, "You have not chosen a seat yet. Click a free seat below."));
+    details.append(el("p", {}, t("pub.me.noSeat")));
   } else {
     const status = me.paid
-      ? el("span", { class: "badge paid" }, "paid ✓")
-      : el("span", { class: "badge reserved" }, "payment pending");
-    details.append(el("p", {}, `Seat `, el("strong", {}, me.seat), " ", status));
+      ? el("span", { class: "badge paid" }, t("pub.me.paid"))
+      : el("span", { class: "badge reserved" }, t("pub.me.pending"));
+    details.append(el("p", {}, tNodes("pub.me.seat", { seat: el("strong", {}, me.seat), status })));
     if (!me.paid && me.reserved_until) {
       details.append(el("p", { class: "small" },
-        "Reserved until ", el("strong", {}, formatDeadline(me.reserved_until)),
-        " – if the payment has not been confirmed by then, the seat is released automatically."));
+        tNodes("pub.me.reservedUntil", { deadline: el("strong", {}, formatDeadline(me.reserved_until)) })));
     }
     if (me.paid) {
       details.append(el("p", { class: "small muted" },
-        "Want to sit somewhere else? Pick another free seat below – your payment moves with you."));
+        t("pub.me.switchPaid")));
     } else {
       details.append(el("p", {},
         el("button", { type: "button", dataset: { focusKey: "pay" }, onclick: () => openPayDialog() },
-          "Show payment details"), " ",
+          t("pub.me.showPayment")), " ",
         el("button", { type: "button", class: "danger", dataset: { focusKey: "release" }, onclick: releaseSeat },
-          "Release seat"),
+          t("pub.me.release")),
       ));
     }
   }
@@ -191,9 +187,7 @@ function renderAccess() {
   $("code-card").hidden = !open || me || state.codeOk;
   $("register-card").hidden = !open || me || !state.codeOk;
   $("names-hint").hidden = state.namesVisible;
-  $("names-hint").textContent = open
-    ? "🔒 Names are hidden. Enter the event code above to see who sits where."
-    : "🔒 Names are hidden.";
+  $("names-hint").textContent = t(open ? "pub.seats.namesHiddenCode" : "pub.seats.namesHidden");
 }
 
 async function loadSeats() {
@@ -203,7 +197,7 @@ async function loadSeats() {
   if (!data.event_code_ok && getEventCode() && !state.me) {
     // the admin changed the code (or it was never valid)
     setEventCode(null);
-    showMessage($("code-msg"), "The event code has changed. Please enter the new one.");
+    showMessage($("code-msg"), t("pub.code.changed"));
   }
   renderAccess();
   const fingerprint = JSON.stringify([data.layout, data.seats]);
@@ -244,8 +238,12 @@ function renderSeatMap(data) {
     renderSeat(pos) {
       const seat = byId.get(pos.id);
       const title = seat.status === "free"
-        ? `${seat.id} – free`
-        : `${seat.id} – ${seat.name ?? "taken"} (${seat.status === "paid" ? "paid" : "payment pending"})`;
+        ? t("pub.seats.titleFree", { seat: seat.id })
+        : t("pub.seats.titleTaken", {
+          seat: seat.id,
+          name: seat.name ?? t("pub.seats.taken"),
+          status: t(seat.status === "paid" ? "pub.seats.statusPaid" : "pub.seats.statusPending"),
+        });
       return el("button", {
         type: "button",
         class: "seat " + (seat.mine ? "mine" : seat.status),
@@ -258,21 +256,21 @@ function renderSeatMap(data) {
   });
   $("seat-map").replaceChildren(area);
   if (!data.layout.groups.length) {
-    $("seat-map").replaceChildren(el("p", { class: "muted" }, "The seat plan has not been published yet."));
+    $("seat-map").replaceChildren(el("p", { class: "muted" }, t("pub.seats.notPublished")));
   }
   restoreFocus();
   const taken = data.seats.filter((s) => s.status !== "free").length;
   const paid = data.seats.filter((s) => s.status === "paid").length;
-  $("seat-stats").textContent =
-    `${taken} of ${data.seats.length} seats taken · ${paid} paid · ${data.seats.length - taken} free`;
+  $("seat-stats").textContent = t("pub.seats.stats",
+    { taken, total: data.seats.length, paid, free: data.seats.length - taken });
 }
 
 function onSeatClick(seat) {
   if (seat.mine) return openPayDialog();
   if (seat.status === "free") return pickSeat(seat.id);
   showMessage($("seat-msg"), seat.name
-    ? `Seat ${seat.id} is taken by ${seat.name}.`
-    : `Seat ${seat.id} is taken. Enter the event code to see by whom.`, "info");
+    ? t("pub.seats.takenBy", { seat: seat.id, name: seat.name })
+    : t("pub.seats.takenHidden", { seat: seat.id }), "info");
 }
 
 async function loadMe() {
@@ -292,21 +290,17 @@ async function pickSeat(seatId) {
   showMessage(msg, "");
   if (!state.me) {
     if (!state.info?.registration_open) {
-      showMessage(msg, "Registration hasn't opened yet.");
+      showMessage(msg, t("pub.seats.notOpen"));
       return;
     }
     const needsCode = !$("code-card").hidden;
-    showMessage(msg, needsCode
-      ? "Please enter the event code and register first (above)."
-      : "Please register first (form above).");
+    showMessage(msg, t(needsCode ? "pub.seats.codeFirst" : "pub.seats.registerFirst"));
     $(needsCode ? "code-card" : "register-card").scrollIntoView({ behavior: "smooth" });
     return;
   }
   const question = !state.me.seat
-    ? `Reserve seat ${seatId}?`
-    : state.me.paid
-      ? `Switch from seat ${state.me.seat} to ${seatId}? Your payment moves with you.`
-      : `Move from seat ${state.me.seat} to ${seatId}?`;
+    ? t("pub.seats.confirmReserve", { seat: seatId })
+    : t(state.me.paid ? "pub.seats.confirmSwitchPaid" : "pub.seats.confirmMove", { from: state.me.seat, to: seatId });
   if (!confirm(question)) return;
   try {
     const data = await api("POST", "/me/seat", { seat: seatId });
@@ -322,7 +316,7 @@ async function pickSeat(seatId) {
 }
 
 async function releaseSeat() {
-  if (!confirm(`Release seat ${state.me.seat}?`)) return;
+  if (!confirm(t("pub.seats.confirmRelease", { seat: state.me.seat }))) return;
   try {
     const data = await api("DELETE", "/me/seat");
     state.me = data.user;
@@ -342,12 +336,12 @@ function openPayDialog() {
 function fillPayDialog() {
   const p = state.payment;
   if (!p || !state.me || !state.me.seat || state.me.paid) return false;
-  $("pay-seat").textContent = state.me.seat;
+  $("pay-title").textContent = t("pub.pay.title", { seat: state.me.seat });
   $("pay-amount").textContent = formatMoney(p.amount_cents);
-  $("pay-address").textContent = p.paypal_address || "(not configured yet – please check back later)";
+  $("pay-address").textContent = p.paypal_address || t("pub.pay.notConfigured");
   $("pay-ref").textContent = p.reference;
   $("pay-deadline").textContent = p.reserved_until
-    ? `Please pay by ${formatDeadline(p.reserved_until)} – unpaid reservations are released automatically after that.`
+    ? t("pub.pay.deadline", { date: formatDeadline(p.reserved_until) })
     : "";
   return true;
 }
@@ -374,8 +368,7 @@ async function createLoginLink() {
   try {
     const data = await api("POST", "/me/login-link");
     $("login-link").value = `${location.origin}/#login=${data.code}`;
-    $("login-link-expiry").textContent =
-      `Works once, valid until ${formatDeadline(data.expires_at)}. Don't share it – whoever opens it is logged in as you.`;
+    $("login-link-expiry").textContent = t("pub.loginLink.expiry", { date: formatDeadline(data.expires_at) });
     $("login-link-result").hidden = false;
     $("login-link").select();
   } catch (err) {
@@ -387,9 +380,9 @@ async function copy(text, button) {
   try {
     await navigator.clipboard.writeText(text);
     const old = button.textContent;
-    button.textContent = "Copied!";
+    button.textContent = t("common.copied");
     setTimeout(() => (button.textContent = old), 1500);
-  } catch { prompt("Copy this:", text); }
+  } catch { prompt(t("common.copyPrompt"), text); }
 }
 
 async function onRegister(event) {
@@ -408,7 +401,7 @@ async function onRegister(event) {
     state.payment = null;
     renderMe();
     await loadSeats();
-    showMessage($("me-msg"), "Registered! Now pick a free seat.", "success");
+    showMessage($("me-msg"), t("pub.register.done"), "success");
   } catch (err) {
     showMessage(msg, err.message);
   }
@@ -425,7 +418,7 @@ async function onEventCode(event) {
     setEventCode(code);
     form.reset();
     await loadSeats();
-    showMessage($("register-msg"), "Unlocked! You can now see who sits where, and register here.", "success");
+    showMessage($("register-msg"), t("pub.code.unlocked"), "success");
     $("register-form").name.focus();
   } catch (err) {
     showMessage(msg, err.message);

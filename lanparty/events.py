@@ -19,6 +19,7 @@ from flask import current_app, g, has_app_context
 
 from . import settings as cfg
 from .db import get_db
+from .i18n import tr
 
 STATUSES = ("draft", "upcoming", "active", "archived")
 # what a new event copies from the one it is based on (dates and code are per event)
@@ -112,8 +113,8 @@ def _readable(value: str) -> str:
 
 
 def describe_window(e: dict) -> str:
-    end = _readable(e["event_end"]) if e["event_end"] else "never (no end set)"
-    return f"registration opens {_readable(e['registration_opens'])}, ends {end}"
+    end = _readable(e["event_end"]) if e["event_end"] else tr("never (no end set)")
+    return tr("registration opens {opens}, ends {end}", opens=_readable(e["registration_opens"]), end=end)
 
 
 def overlapping(event_id: int, opens: str, end: str) -> dict | None:
@@ -136,7 +137,7 @@ def create(copy_from: int | None) -> int:
     """
     db = get_db()
     if copy_from is not None and db.execute("SELECT 1 FROM events WHERE id = ?", (copy_from,)).fetchone() is None:
-        raise EventError("The event to copy from does not exist.")
+        raise EventError(tr("The event to copy from does not exist."))
     event_id = db.execute("INSERT INTO events DEFAULT VALUES").lastrowid
     if copy_from is not None:
         marks = ",".join("?" * len(COPIED_KEYS))
@@ -155,12 +156,12 @@ def delete(event_id: int) -> dict:
     """
     event = get(event_id)
     if event is None:
-        raise EventError("Event not found.")
+        raise EventError(tr("Event not found."))
     if event["status"] == "active":
-        raise EventError("The active event can't be deleted. Change its dates first.")
+        raise EventError(tr("The active event can't be deleted. Change its dates first."))
     db = get_db()
     if db.execute("SELECT COUNT(*) FROM events").fetchone()[0] <= 1:
-        raise EventError("The only event can't be deleted. Create another one first.")
+        raise EventError(tr("The only event can't be deleted. Create another one first."))
     # users cascade to their tokens and login codes; settings cascade with the event
     event["participants"] = db.execute(
         "SELECT COUNT(*) FROM users WHERE event_id = ?", (event_id,)).fetchone()[0]

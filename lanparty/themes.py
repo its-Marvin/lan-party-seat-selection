@@ -19,6 +19,8 @@ import re
 
 from flask import current_app
 
+from .i18n import tr
+
 DEFAULT_THEME = "default"
 THEME_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")
 MAX_CSS_BYTES = 512 * 1024
@@ -69,28 +71,28 @@ def _read_theme(folder: Path, builtin: bool) -> Theme:
             name = str(data.get("name") or theme_id)[:60]
             description = str(data.get("description") or "")[:300]
     except OSError as exc:
-        problem = f"theme.json can't be read ({exc.strerror or exc})."
+        problem = tr("theme.json can't be read ({error}).", error=exc.strerror or exc)
     except ValueError as exc:
-        problem = f"theme.json is not valid JSON ({exc})."
+        problem = tr("theme.json is not valid JSON ({error}).", error=exc)
     css = folder / "theme.css"
     if problem is None:
         try:
             if not css.is_file():
-                problem = "theme.css is missing."
+                problem = tr("theme.css is missing.")
             elif css.stat().st_size > MAX_CSS_BYTES:
-                problem = f"theme.css is larger than {MAX_CSS_BYTES // 1024} KB."
+                problem = tr("theme.css is larger than {size} KB.", size=MAX_CSS_BYTES // 1024)
             else:
                 text = css.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             # e.g. wrong permissions: only this theme is unusable, the others keep working
-            problem = f"theme.css can't be read ({exc.strerror or exc})."
+            problem = tr("theme.css can't be read ({error}).", error=exc.strerror or exc)
     if problem is None:
         # a mode that only appears in a comment doesn't count
         text = CSS_COMMENT_RE.sub("", text)
         missing = [mode for mode, pattern in MODE_BLOCK_RE.items() if not pattern.search(text)]
         if missing:
-            problem = ("theme.css must style both colour modes; missing "
-                       + " and ".join(f':root[data-mode="{m}"]' for m in missing) + ".")
+            problem = tr("theme.css must style both colour modes; missing {blocks}.",
+                         blocks=" + ".join(f':root[data-mode="{m}"]' for m in missing))
     return Theme(theme_id, name, description, builtin, folder, problem)
 
 
@@ -106,7 +108,7 @@ def discover() -> dict[str, Theme]:
             # e.g. wrong permissions on THEMES_DIR: report it, keep the built-in themes
             themes[f"unreadable:{root}"] = Theme(
                 str(root), str(root), "", builtin, root,
-                f"The themes folder can't be read ({exc.strerror or exc}).")
+                tr("The themes folder can't be read ({error}).", error=exc.strerror or exc))
             continue
         for folder in folders:
             try:
@@ -115,17 +117,17 @@ def discover() -> dict[str, Theme]:
             except OSError as exc:
                 themes[f"unreadable:{folder}"] = Theme(
                     folder.name, folder.name, "", builtin, folder,
-                    f"The theme folder can't be read ({exc.strerror or exc}).")
+                    tr("The theme folder can't be read ({error}).", error=exc.strerror or exc))
                 continue
             if not THEME_ID_RE.fullmatch(folder.name):
                 themes[f"invalid:{folder.name}"] = Theme(
                     folder.name, folder.name, "", builtin, folder,
-                    "Folder names may only use lowercase letters, digits, - and _ (max. 40).")
+                    tr("Folder names may only use lowercase letters, digits, - and _ (max. 40)."))
                 continue
             if folder.name in themes:
                 themes[f"conflict:{folder.name}"] = Theme(
                     folder.name, folder.name, "", builtin, folder,
-                    "A built-in theme already has this name; rename the folder.")
+                    tr("A built-in theme already has this name; rename the folder."))
                 continue
             themes[folder.name] = _read_theme(folder, builtin)
     return themes

@@ -19,7 +19,7 @@ const forEvent = (path) => `${path}${path.includes("?") ? "&" : "?"}event=${enco
 const currentEventData = () => eventsCache.find((e) => e.id === currentEvent) || null;
 const isArchived = () => currentEventData()?.status === "archived";
 
-const STATUS_LABELS = { active: "active", upcoming: "upcoming", draft: "draft", archived: "archived" };
+const statusLabel = (status) => t(`admin.status.${status}`);
 
 // Settings typed into the form but not saved yet. Kept (like an unsaved layout
 // draft) across a sign-in after the session expired, instead of being reloaded.
@@ -29,6 +29,11 @@ function unsavedWork() {
   return [window.LayoutEditor.isDirty() && "layout", settingsDirty && "settings"].filter(Boolean);
 }
 
+/** "layout changes", "settings changes" or both, for messages about unsaved work. */
+function describeUnsaved(unsaved) {
+  return t(unsaved.length === 2 ? "admin.unsaved.both" : `admin.unsaved.${unsaved[0]}`);
+}
+
 async function checkSession() {
   const { admin, actor } = await api("GET", "/admin/session");
   // Never show admin data (emails, event code, audit log) without a session;
@@ -36,11 +41,11 @@ async function checkSession() {
   $("login-card").hidden = admin;
   $("admin-area").hidden = !admin;
   $("session-controls").hidden = !admin;
-  $("actor").textContent = actor ? `Logged in as ${actor}` : "";
+  $("actor").textContent = actor ? t("admin.loggedInAs", { actor }) : "";
   if (!admin) {
     const unsaved = unsavedWork();
     showMessage($("login-msg"), unsaved.length
-      ? `Your unsaved ${unsaved.join(" and ")} changes are kept in this tab. Sign in again, then save them.`
+      ? t("admin.unsavedKept", { what: describeUnsaved(unsaved) })
       : "", "info");
     if (unsaved.length) $("login-form").password.focus();
     return;
@@ -59,14 +64,16 @@ async function loadEvents({ background = false } = {}) {
   eventsCache = data.events;
   const gone = currentEvent !== null && !eventsCache.some((e) => e.id === currentEvent);
   if (currentEvent === null) currentEvent = data.default_id;
-  $("event-timezone").textContent = data.timezone ? `Dates and times are in ${data.timezone}.` : "";
+  $("event-timezone").textContent = data.timezone ? t("admin.event.timezone", { tz: data.timezone }) : "";
   // rebuilding the options would close the dropdown if it is open: only on change
   const fingerprint = JSON.stringify([currentEvent, eventsCache.map((e) => [e.id, e.event_name, e.status, e.event_start])]);
   if (fingerprint !== eventsRendered) {
     eventsRendered = fingerprint;
     $("event-select").replaceChildren(...eventsCache.map((e) => el("option", {
     value: e.id, selected: e.id === currentEvent,
-    }, `${e.event_name} – ${STATUS_LABELS[e.status]}${e.event_start ? ` (${formatDateTime(e.event_start)})` : ""}`)));
+    }, e.event_start
+      ? t("admin.event.optionDate", { name: e.event_name, status: statusLabel(e.status), date: formatDateTime(e.event_start) })
+      : t("admin.event.option", { name: e.event_name, status: statusLabel(e.status) }))));
   }
   renderEventStatus();
   if (gone && goneEvent !== currentEvent) {
@@ -75,7 +82,7 @@ async function loadEvents({ background = false } = {}) {
     // writing it to another event, because saves target the draft's own event.
     goneEvent = currentEvent;
     await switchEvent(data.default_id);
-    showMessage($("event-msg"), "The event you were editing was deleted, probably by another admin.");
+    showMessage($("event-msg"), t("admin.event.deletedElsewhere"));
   }
 }
 
@@ -86,18 +93,18 @@ function setSettingsLocked(locked) {
 function renderEventStatus() {
   const e = currentEventData();
   if (!e) return;
-  const badge = el("span", { class: `badge status-${e.status}` }, STATUS_LABELS[e.status]);
+  const badge = el("span", { class: `badge status-${e.status}` }, statusLabel(e.status));
+  const dates = { opens: formatDateTime(e.registration_opens), end: formatDateTime(e.event_end) };
   const text = {
-    active: `Registration is open since ${formatDateTime(e.registration_opens)}` +
-      (e.event_end ? `; the event is archived automatically when it ends (${formatDateTime(e.event_end)}).` : "; no end is set, so it stays open."),
-    upcoming: `Registration opens ${formatDateTime(e.registration_opens)}. Until then only admins see this event; it's listed publicly as upcoming.`,
-    draft: "Not scheduled yet: set \"Registration opens\" in the settings below. Only admins see drafts.",
-    archived: `The event ended ${formatDateTime(e.event_end)}. Participants and the seat plan are read-only; settings can still be corrected.`,
+    active: t(e.event_end ? "admin.event.statusActiveEnd" : "admin.event.statusActiveNoEnd", dates),
+    upcoming: t("admin.event.statusUpcoming", dates),
+    draft: t("admin.event.statusDraft"),
+    archived: t("admin.event.statusArchived", dates),
   }[e.status];
   $("event-status").replaceChildren(badge, " ", text, " ",
-    el("span", { class: "muted" }, `${e.registered} registered · ${e.seated} seated · ${e.paid} paid`));
+    el("span", { class: "muted" }, t("admin.event.counts", { registered: e.registered, seated: e.seated, paid: e.paid })));
   $("delete-event").disabled = e.status === "active" || eventsCache.length <= 1;
-  $("delete-event").title = e.status === "active" ? "The active event can't be deleted" : "";
+  $("delete-event").title = e.status === "active" ? t("admin.event.cantDeleteActive") : "";
   window.LayoutEditor.setReadOnly(e.status === "archived");
 }
 
@@ -106,10 +113,10 @@ async function switchEvent(eventId, force = false) {
   const unsaved = force ? [] : unsavedWork();
   if (window.LayoutEditor.isSaving() || settingsSaving) {
     $("event-select").value = currentEvent;
-    showMessage($("event-msg"), "Please wait until saving has finished.", "info");
+    showMessage($("event-msg"), t("admin.event.waitSaving"), "info");
     return;
   }
-  if (unsaved.length && !confirm(`Discard your unsaved ${unsaved.join(" and ")} changes?`)) {
+  if (unsaved.length && !confirm(t("admin.event.confirmDiscard", { what: describeUnsaved(unsaved) }))) {
     $("event-select").value = currentEvent;
     return;
   }
@@ -138,21 +145,20 @@ async function switchEvent(eventId, force = false) {
   if (eventId !== currentEvent) return;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
-    showMessage($("event-msg"), `${failed.reason.message} – pick the event again to retry.`);
+    showMessage($("event-msg"), t("admin.event.loadFailed", { error: failed.reason.message }));
     if (failed.reason.status === 401) await checkSession();
   }
 }
 
 async function createEvent() {
   const base = currentEventData();
-  if (!confirm(`Create a new event based on "${base.event_name}"?\n\n` +
-               "It copies the settings and the seat layout, but not the dates, the event code or any participants.")) return;
+  if (!confirm(t("admin.event.confirmNew", { name: base.event_name }))) return;
   try {
     const { event } = await api("POST", "/admin/events", { copy_from: base.id });
     await loadEvents();
     $("event-select").value = event.id;
     await switchEvent(event.id);
-    showMessage($("event-msg"), "New event created. Set its dates and event code in the settings below.", "success");
+    showMessage($("event-msg"), t("admin.event.created"), "success");
     await loadAudit();
   } catch (err) {
     showMessage($("event-msg"), err.message);
@@ -162,8 +168,10 @@ async function createEvent() {
 
 async function deleteEvent() {
   const e = currentEventData();
-  const people = e.registered ? ` and its ${e.registered} participant(s) with their seats and payments` : "";
-  if (!confirm(`Delete "${e.event_name}"${people} permanently? This can't be undone.`)) return;
+  const question = e.registered
+    ? t("admin.event.confirmDeleteWithPeople", { name: e.event_name, count: e.registered })
+    : t("admin.event.confirmDelete", { name: e.event_name });
+  if (!confirm(question)) return;
   try {
     await api("DELETE", `/admin/events/${e.id}`);
     if (currentEvent === e.id) {
@@ -175,7 +183,7 @@ async function deleteEvent() {
       // another event was picked while deleting: keep it and its unsaved work
       await loadEvents();
     }
-    showMessage($("event-msg"), `"${e.event_name}" was deleted.`, "success");
+    showMessage($("event-msg"), t("admin.event.deleted", { name: e.event_name }), "success");
     await loadAudit();
   } catch (err) {
     showMessage($("event-msg"), err.message);
@@ -208,51 +216,53 @@ async function loadUsers() {
   tbody.replaceChildren();
 
   if (!users.length) {
-    tbody.append(el("tr", {}, el("td", { colspan: 6, class: "muted" }, "Nobody registered yet.")));
+    tbody.append(el("tr", {}, el("td", { colspan: 6, class: "muted" }, t("admin.users.none"))));
   }
   for (const u of users) {
-    const select = el("select", { "aria-label": `Move ${u.name}` },
-      el("option", { value: "" }, "— no seat —"),
+    const select = el("select", { "aria-label": t("admin.users.moveLabel", { name: u.name }) },
+      el("option", { value: "" }, t("admin.users.noSeat")),
       ...[u.seat, ...freeSeats].filter(Boolean).sort(seatOrder)
         .map((id) => el("option", { value: id, selected: id === u.seat }, id)),
     );
     const moveBtn = el("button", {
       type: "button",
       onclick: () => act(() => api("POST", `/admin/users/${u.id}/move`, { seat: select.value || null })),
-    }, "Move");
+    }, t("admin.users.move"));
     const payBtn = el("button", {
       type: "button",
       class: u.paid ? "" : "primary",
       onclick: () => act(() => api("POST", `/admin/users/${u.id}/paid`, { paid: !u.paid })),
-    }, u.paid ? "Mark unpaid" : "Confirm payment");
+    }, t(u.paid ? "admin.users.markUnpaid" : "admin.users.confirmPayment"));
     const removeBtn = el("button", {
       type: "button",
       class: "danger",
       onclick: () => {
-        if (confirm(`Remove ${u.name} (${u.email}) completely?`)) {
+        if (confirm(t("admin.users.confirmRemove", { name: u.name, email: u.email }))) {
           act(() => api("DELETE", `/admin/users/${u.id}`));
         }
       },
-    }, "Remove");
+    }, t("admin.users.remove"));
     const linkBtn = el("button", {
       type: "button",
-      title: "Create a one-time login link for this person (e.g. if they lost access)",
+      title: t("admin.users.linkTitle"),
       onclick: () => act(async () => {
         const data = await api("POST", `/admin/users/${u.id}/login-link`);
-        prompt(`One-time login link for ${u.name} – send it only to ${u.email}.\n` +
-               `Works once, valid until ${formatDateTime(data.expires_at)}.`,
+        prompt(t("admin.users.linkPrompt", { name: u.name, email: u.email, date: formatDateTime(data.expires_at) }),
                `${location.origin}/#login=${data.code}`);
       }),
-    }, "Login link");
+    }, t("admin.users.link"));
 
     const status = !u.seat
-      ? el("span", { class: "badge" }, "no seat")
+      ? el("span", { class: "badge" }, t("admin.users.badgeNoSeat"))
       : u.paid
-        ? el("span", { class: "badge paid", title: u.paid_at ? `paid ${u.paid_at} UTC` : "" }, "paid")
+        ? el("span", { class: "badge paid", title: u.paid_at ? t("admin.users.paidAt", { date: u.paid_at }) : "" },
+          t("admin.users.badgePaid"))
         : el("span", {
             class: "badge reserved",
-            title: u.reserved_until ? `released automatically at ${formatDateTime(u.reserved_until)}` : "",
-          }, u.reserved_until ? `pending until ${formatDateTime(u.reserved_until)}` : "pending");
+            title: u.reserved_until ? t("admin.users.releasedAt", { date: formatDateTime(u.reserved_until) }) : "",
+          }, u.reserved_until
+            ? t("admin.users.pendingUntil", { date: formatDateTime(u.reserved_until) })
+            : t("admin.users.pending"));
 
     const actions = readOnly ? [removeBtn] : [payBtn, el("span", { class: "move" }, select, moveBtn), linkBtn, removeBtn];
     tbody.append(el("tr", {},
@@ -272,10 +282,11 @@ async function loadUsers() {
   const fee = settingsCache?.event_id === eventId ? settingsCache.amount_cents : null;
   // received = amounts actually confirmed; outstanding = open reservations at the current fee
   const received = paid.reduce((sum, u) => sum + (u.paid_amount_cents ?? 0), 0);
-  $("stats").textContent =
-    `${users.length} registered · ${seated.length}/${seatData.seats.length} seats taken · ` +
-    `${paid.length} paid · ${formatMoney(received)} received` +
-    (fee !== null ? `, ${formatMoney(seated.filter((u) => !u.paid).length * fee)} outstanding` : "");
+  $("stats").textContent = t("admin.users.stats", {
+    registered: users.length, seated: seated.length, seats: seatData.seats.length,
+    paid: paid.length, received: formatMoney(received),
+  }) + (fee !== null
+    ? t("admin.users.outstanding", { amount: formatMoney(seated.filter((u) => !u.paid).length * fee) }) : "");
 }
 
 function seatOrder(a, b) {
@@ -319,7 +330,7 @@ async function loadAudit() {
       el("td", { class: "details" }, describeDetails(e.details)),
     );
   });
-  $("audit").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { colspan: 4, class: "muted" }, "No entries yet."))]));
+  $("audit").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { colspan: 4, class: "muted" }, t("admin.audit.none")))]));
   labelCells($("audit"));
 }
 
@@ -357,26 +368,27 @@ function renderThemeList(data) {
   themesCache = data.themes;
   const select = $("theme-choice");
   const current = select.value;
-  select.replaceChildren(...data.themes.map((t) => el("option", { value: t.id }, t.builtin ? t.name : `${t.name} (custom)`)));
+  select.replaceChildren(...data.themes.map((theme) => el("option", { value: theme.id },
+    theme.builtin ? theme.name : t("admin.themes.custom", { name: theme.name }))));
   if (current) addMissingTheme(current);
   select.value = current;
   $("themes-dir").textContent = data.themes_dir;
   $("theme-problems").replaceChildren(...data.problems.map((p) =>
-    el("li", {}, `Theme folder "${p.id}" can't be used: ${p.problem}`)));
+    el("li", {}, t("admin.themes.problem", { id: p.id, problem: p.problem }))));
 }
 
 /** An event's theme stays listed even if its folder is gone. */
 function addMissingTheme(id) {
   const select = $("theme-choice");
   if (id && !Array.from(select.options).some((o) => o.value === id)) {
-    select.append(el("option", { value: id }, `${id} (missing – the default theme is shown)`));
+    select.append(el("option", { value: id }, t("admin.themes.missing", { id })));
   }
 }
 
 function renderThemeChoice() {
   const id = $("theme-choice").value;
-  $("theme-preview").href = `/?theme=${encodeURIComponent(id)}`;
-  $("theme-description").textContent = themesCache.find((t) => t.id === id)?.description ?? "";
+  $("theme-preview").href = window.I18N.withLang(`/?theme=${encodeURIComponent(id)}`);
+  $("theme-description").textContent = themesCache.find((theme) => theme.id === id)?.description ?? "";
 }
 
 async function onSaveSettings(event) {
@@ -388,7 +400,7 @@ async function onSaveSettings(event) {
   // save to the event the form values belong to, never to one picked meanwhile
   const target = settingsEventId;
   if (target === null || target !== currentEvent) {
-    showMessage(msg, "These settings belong to another event. Pick that event again or reload the page.");
+    showMessage(msg, t("admin.settings.otherEvent"));
     return;
   }
   // lock the form until the save and reload are done, so no edit made in the
@@ -401,7 +413,7 @@ async function onSaveSettings(event) {
     settingsDirty = false;
     await loadEvents();               // the status follows the dates
     await loadSettings();
-    showMessage(msg, "Settings saved.", "success");
+    showMessage(msg, t("admin.settings.saved"), "success");
     await loadUsers();
     await loadAudit();
   } catch (err) {
@@ -445,6 +457,7 @@ setInterval(() => {
 }, 60000);
 
 document.addEventListener("DOMContentLoaded", () => {
+  document.title = t("admin.pageTitle");
   setSettingsLocked(true);   // unlocked once an event's values are in the form
   $("login-form").addEventListener("submit", onLogin);
   $("event-select").addEventListener("change", (e) => switchEvent(Number(e.target.value)));
@@ -458,7 +471,7 @@ document.addEventListener("DOMContentLoaded", () => {
     await checkSession();
   });
   $("logout-all").addEventListener("click", async () => {
-    if (!confirm("Log out ALL admin sessions on all devices (including this one)?")) return;
+    if (!confirm(t("admin.confirmLogoutAll"))) return;
     await api("POST", "/admin/logout-all");
     await checkSession();
   });
