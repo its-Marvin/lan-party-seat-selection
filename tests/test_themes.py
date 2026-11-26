@@ -212,6 +212,7 @@ def test_base_css_has_both_modes_for_every_token():
 
 
 def test_mode_block_detection():
-    assert th.MODE_BLOCK_RE["dark"].search(':root[data-mode="dark"]')
-    assert th.MODE_BLOCK_RE["light"].search(":root[ data-mode = 'light' ]")
-    assert not th.MODE_BLOCK_RE["light"].search(':root[data-mode="lightish"]')
+    assert th.MODE_BLOCK_RE["dark"].search(':root[data-mode="dark"] {')
+    assert th.MODE_BLOCK_RE["light"].search(":root[ data-mode = 'light' ] body {")
+    assert not th.MODE_BLOCK_RE["light"].search(':root[data-mode="lightish"] {')
+    assert not th.MODE_BLOCK_RE["light"].search('content: \'[data-mode="light"]\';')

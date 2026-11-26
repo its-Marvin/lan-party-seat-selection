@@ -89,6 +89,7 @@
   "Your payment is already confirmed, so the seat can't be given up here. You can switch to another free seat, or ask an admin to cancel.": "Deine Zahlung ist schon bestätigt, daher kannst du den Platz hier nicht freigeben. Du kannst auf einen anderen freien Platz wechseln oder einen Admin bitten, zu stornieren.",
   "never (no end set)": "nie (kein Ende gesetzt)",
   "registration opens {opens}, ends {end}": "Anmeldung öffnet {opens}, endet {end}",
+  "theme.css can't be read ({error}).": "theme.css kann nicht gelesen werden ({error}).",
   "theme.css is larger than {size} KB.": "theme.css ist größer als {size} KB.",
   "theme.css is missing.": "theme.css fehlt.",
   "theme.css must style both colour modes; missing {blocks}.": "theme.css muss beide Farbmodi gestalten; es fehlt {blocks}.",

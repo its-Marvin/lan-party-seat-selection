@@ -188,6 +188,34 @@ def _migrate(db: sqlite3.Connection) -> None:
 PER_EVENT_KEYS = ("layout",)  # besides settings.DEFAULTS
 
 
+def _migrated_opening(db: sqlite3.Connection, event_id: int) -> str:
+    """When registration "opened" for a migrated event.
+
+    Registration has been open so far, so normally that is now and the event
+    stays open. An event that has already ended is archived instead, with a
+    valid window: registration opens at its start (or a day before its end).
+    """
+    from datetime import datetime, timedelta
+
+    from .events import local_now
+
+    def stored(key):
+        row = db.execute("SELECT value FROM event_settings WHERE event_id = ? AND key = ?",
+                         (event_id, key)).fetchone()
+        try:
+            return datetime.fromisoformat(row["value"]) if row and row["value"] else None
+        except ValueError:
+            return None
+
+    now = local_now().replace(second=0)
+    end = stored("event_end")
+    if end is None or end > now:
+        return now.strftime("%Y-%m-%dT%H:%M")
+    start = stored("event_start")
+    opens = start if start is not None and start < end else end - timedelta(days=1)
+    return opens.strftime("%Y-%m-%dT%H:%M")
+
+
 def _migrate_to_events(db: sqlite3.Connection, defaults: dict, user_columns: set) -> None:
     """Single-event databases: everything becomes event 1, which stays open.
 
@@ -205,12 +233,9 @@ def _migrate_to_events(db: sqlite3.Connection, defaults: dict, user_columns: set
             (event_id, *keys),
         )
         db.execute(f"DELETE FROM settings WHERE key IN ({marks})", keys)
-        # registration has been open so far: keep it that way
-        from .events import local_now
-
         db.execute(
             "INSERT OR IGNORE INTO event_settings (event_id, key, value) VALUES (?, 'registration_opens', ?)",
-            (event_id, local_now().strftime("%Y-%m-%dT%H:%M")),
+            (event_id, _migrated_opening(db, event_id)),
         )
     if "event_id" not in user_columns:
         first = db.execute("SELECT MIN(id) FROM events").fetchone()[0]

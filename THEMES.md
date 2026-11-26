@@ -15,7 +15,8 @@ Two themes come with the app:
 
 - Built-in themes: `lanparty/themes/<id>/`
 - Your own themes: `instance/themes/<id>/`, or the folder set in the `THEMES_DIR` environment
-  variable. This folder survives app updates. Create it if it doesn't exist.
+  variable (a relative path counts from the directory the app is started in). This folder
+  survives app updates. Create it if it doesn't exist.
 
 The folder name is the theme's id. It may use lowercase letters, digits, `-` and `_` (40 characters
 at most). A custom theme can't use the name of a built-in one.
@@ -59,7 +60,8 @@ page marks the result on the `<html>` element as `data-mode="dark"` or `data-mod
 ```
 
 A theme whose `theme.css` lacks either block isn't offered. The admin page lists it under the
-theme picker with the reason. A block may be empty (the `default` theme's are) if the standard
+theme picker with the reason. Only real rules count: a block that is commented out doesn't, and
+neither does a `theme.css` the app can't read (check the file permissions). A block may be empty (the `default` theme's are) if the standard
 colours suit that mode.
 
 ## Step by step
@@ -156,6 +158,8 @@ returns 404. Check the licence of fonts and images you bundle.
   `/themes/<id>/theme.css` of the active event's theme. Because of the redirect, relative URLs in
   the theme resolve inside its folder. Without an active event, or if the chosen theme has
   disappeared or become invalid, it falls back to `default`.
-- `/?theme=<id>` makes `theme.js` load that theme instead (preview).
+- Pages that are already open follow changes: when polling shows a different theme (another event
+  opened, or an admin picked another theme), the page switches its stylesheet.
+- `/?theme=<id>` makes `theme.js` load that theme instead (preview); such a page keeps it.
 - Theme files are sent with `Cache-Control: no-cache`, so edits show up on the next page load.
 - A new event copies the theme of the event it is based on.
