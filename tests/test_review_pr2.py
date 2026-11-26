@@ -4,11 +4,11 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import re
-import sqlite3
 
 import pytest
 
 from lanparty import api as api_module
+from tests.helpers import other_connection
 from tests.test_review_fixes import ADMIN_PW, admin, app, register  # noqa: F401
 
 ROOT = Path(__file__).parent.parent
@@ -27,7 +27,7 @@ def move_right_after_commit(app, monkeypatch, user_id):
     def then_concurrent_move():
         with real() as db:
             yield db
-        other = sqlite3.connect(app.config["DATABASE"])
+        other = other_connection(app)
         other.execute("UPDATE users SET seat = 'B8' WHERE id = ?", (user_id,))
         other.commit()
         other.close()

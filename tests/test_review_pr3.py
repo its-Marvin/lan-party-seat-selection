@@ -6,9 +6,11 @@ import hashlib
 import sqlite3
 import time
 
+import pytest
+
 from lanparty import api as api_module
 from lanparty import create_app
-from lanparty.db import get_db
+from lanparty.db import get_db, utc_now
 from tests.test_events import ADMIN_PW, admin, app, register, schedule_second_event  # noqa: F401
 
 
@@ -20,7 +22,7 @@ def test_expiry_does_not_touch_an_event_that_ended_while_waiting(app, admin, fro
     first, _ = schedule_second_event(admin, frozen_event_clock)
     with app.app_context():
         db = get_db()
-        db.execute("UPDATE users SET reserved_at = datetime('now', '-1000 hours')")
+        db.execute("UPDATE users SET reserved_at = ?", (utc_now(-1000),))
         db.commit()
 
     real = api_module.write_transaction
@@ -45,7 +47,7 @@ def test_expiry_still_releases_while_the_event_is_active(app, admin):
     app.test_client().post("/api/me/seat", json={"seat": "A1"}, headers=headers)
     with app.app_context():
         db = get_db()
-        db.execute("UPDATE users SET reserved_at = datetime('now', '-1000 hours')")
+        db.execute("UPDATE users SET reserved_at = ?", (utc_now(-1000),))
         db.commit()
     app.test_client().get("/api/info")
     assert admin.get("/api/admin/users").get_json()["users"][0]["seat"] is None
@@ -78,6 +80,7 @@ def boot(path):
     return app, client
 
 
+@pytest.mark.sqlite_only
 def test_migrated_event_that_already_ended_is_archived_with_a_valid_window(tmp_path):
     # the frozen clock says 2026-06-01 12:00
     path = tmp_path / "ended.sqlite3"
@@ -94,6 +97,7 @@ def test_migrated_event_that_already_ended_is_archived_with_a_valid_window(tmp_p
                      json={"registration_opens": "2026-06-01T12:00"}).status_code == 200
 
 
+@pytest.mark.sqlite_only
 def test_migrated_event_without_start_opens_a_day_before_its_end(tmp_path):
     path = tmp_path / "no-start.sqlite3"
     legacy_db(path, {"event_end": "2026-05-03T12:00"})
@@ -102,6 +106,7 @@ def test_migrated_event_without_start_opens_a_day_before_its_end(tmp_path):
     assert event["status"] == "archived" and event["registration_opens"] == "2026-05-02T12:00"
 
 
+@pytest.mark.sqlite_only
 def test_migrated_event_that_has_not_ended_stays_open(tmp_path):
     path = tmp_path / "running.sqlite3"
     legacy_db(path, {"event_start": "2026-05-01T14:00", "event_end": "2026-12-03T12:00"})

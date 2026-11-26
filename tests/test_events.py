@@ -8,7 +8,7 @@ import sqlite3
 import pytest
 
 from lanparty import create_app
-from lanparty.db import get_db
+from lanparty.db import get_db, utc_now
 from tests.helpers import EVENT_CODE, set_event_code
 
 ADMIN_PW = "s3cret"
@@ -65,6 +65,7 @@ def test_fresh_database_has_one_active_event(app, admin):
     assert info["active"] is True and info["registration_open"] is True and info["upcoming"] == []
 
 
+@pytest.mark.sqlite_only
 def test_single_event_database_is_migrated_into_event_one(tmp_path):
     path = tmp_path / "legacy.sqlite3"
     db = sqlite3.connect(path)
@@ -229,7 +230,7 @@ def test_reservations_of_archived_events_do_not_expire(app, admin, frozen_event_
     first, _ = schedule_second_event(admin, frozen_event_clock)
     with app.app_context():
         db = get_db()
-        db.execute("UPDATE users SET reserved_at = datetime('now', '-1000 hours')")
+        db.execute("UPDATE users SET reserved_at = ?", (utc_now(-1000),))
         db.commit()
     frozen_event_clock["now"] = datetime(2026, 7, 1, 18, 0)
     app.test_client().get("/api/info")

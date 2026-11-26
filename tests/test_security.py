@@ -8,7 +8,7 @@ from flask import Flask
 from flask.sessions import SecureCookieSessionInterface
 
 from lanparty import create_app
-from lanparty.db import get_db
+from lanparty.db import get_db, utc_now
 from tests.helpers import EVENT_CODE, set_event_code
 
 ADMIN_PW = "correct horse battery"
@@ -47,7 +47,8 @@ def register(client, n, addr="10.1.0.1"):
 def sql(app, query, params=()):
     with app.app_context():
         db = get_db()
-        rows = db.execute(query, params).fetchall()
+        cur = db.execute(query, params)
+        rows = cur.fetchall() if cur.description else []
         db.commit()
         return rows
 
@@ -205,7 +206,7 @@ def test_unpaid_reservation_expires(app, client):
     assert me["user"]["reserved_until"].endswith("Z")
     assert me["payment"]["reserved_until"] == me["user"]["reserved_until"]
 
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-49 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-49),))
     seats = {s["id"]: s["status"] for s in client.get("/api/seats").get_json()["seats"]}
     assert seats["A1"] == "free"
     assert client.get("/api/me", headers=headers).get_json()["user"]["seat"] is None
@@ -219,7 +220,7 @@ def test_unpaid_reservation_expires(app, client):
 def test_switching_seat_keeps_deadline(app, client):
     headers, _ = register(client, 1)
     client.post("/api/me/seat", json={"seat": "A1"}, headers=headers)
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-40 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-40),))
     before = client.get("/api/me", headers=headers).get_json()["user"]["reserved_until"]
     client.post("/api/me/seat", json={"seat": "A2"}, headers=headers)
     client.delete("/api/me/seat", headers=headers)
@@ -233,7 +234,7 @@ def test_paid_seats_never_expire(app, client):
     headers, uid = register(client, 1)
     client.post("/api/me/seat", json={"seat": "A1"}, headers=headers)
     admin.post(f"/api/admin/users/{uid}/paid", json={"paid": True})
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-400 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-400),))
     user = client.get("/api/me", headers=headers).get_json()["user"]
     assert user["seat"] == "A1" and user["reserved_until"] is None
 
@@ -244,7 +245,7 @@ def test_revoking_payment_starts_new_window(app, client):
     headers, uid = register(client, 1)
     client.post("/api/me/seat", json={"seat": "A1"}, headers=headers)
     admin.post(f"/api/admin/users/{uid}/paid", json={"paid": True})
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-400 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-400),))
     admin.post(f"/api/admin/users/{uid}/paid", json={"paid": False})
     assert client.get("/api/me", headers=headers).get_json()["user"]["seat"] == "A1"
 
@@ -256,7 +257,7 @@ def test_expiry_can_be_disabled_and_configured(app, client):
     headers, _ = register(client, 1)
     me = client.post("/api/me/seat", json={"seat": "A1"}, headers=headers).get_json()
     assert me["user"]["reserved_until"] is None
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-1000 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-1000),))
     assert client.get("/api/me", headers=headers).get_json()["user"]["seat"] == "A1"
     for bad in (-1, 1441, "abc", 1.5, True):
         assert admin.put("/api/admin/settings", json={"reservation_hours": bad}).status_code == 400
@@ -427,6 +428,7 @@ def test_actor_name_is_sanitised(app, client):
 
 # --- migration of databases from older versions ------------------------------
 
+@pytest.mark.sqlite_only
 def test_old_database_is_migrated(tmp_path):
     path = tmp_path / "old.sqlite3"
     db = sqlite3.connect(path)

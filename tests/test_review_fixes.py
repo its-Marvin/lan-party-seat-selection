@@ -7,7 +7,7 @@ import pytest
 
 from lanparty import api, create_app
 from lanparty import layout as lay
-from lanparty.db import get_db
+from lanparty.db import get_db, utc_now
 from tests.helpers import EVENT_CODE, set_event_code
 
 ADMIN_PW = "correct horse battery"
@@ -137,7 +137,7 @@ def test_expiry_audit_keeps_the_seat(app, admin):
     c.post("/api/me/seat", json={"seat": "A7"}, headers=h)
     with app.app_context():
         db = get_db()
-        db.execute("UPDATE users SET reserved_at = datetime('now', '-49 hours')")
+        db.execute("UPDATE users SET reserved_at = ?", (utc_now(-49),))
         db.commit()
     c.get("/api/info")
     entry = next(e for e in admin.get("/api/admin/audit").get_json()["entries"] if e["action"] == "reservation.expired")

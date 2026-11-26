@@ -16,8 +16,9 @@ A small web app for LAN party seat registration.
 - **Several events:** admins prepare future events in advance. Each one opens automatically on
   its "registration opens" date and is archived when it ends. Only one event is open at a time.
 
-Stack: Python 3.11+ with Flask, SQLite (Python's built-in `sqlite3`), and plain HTML/CSS/JS
-with no build step.
+Stack: Python 3.11+ with Flask, SQLite (Python's built-in `sqlite3`) or PostgreSQL, and plain
+HTML/CSS/JS with no build step. A Docker Compose setup with PostgreSQL is included
+(see [Docker](#docker)).
 
 ## Quick start
 
@@ -30,7 +31,7 @@ export ADMIN_PASSWORD='choose-a-strong-password'   # at least 12 characters
 ```
 
 Open <http://127.0.0.1:5000> for the public page and <http://127.0.0.1:5000/admin> for the admin area.
-To get started, log in as admin, fill in the event details, the PayPal address and the amount,
+For a real event, use [Docker](#docker) instead. To get started, log in as admin, fill in the event details, the PayPal address and the amount,
 arrange the seat layout, and **set an event code**. Until there is a code, registration is closed.
 The first event is created automatically and is open straight away; see [Events](#events) for
 planning the next one.
@@ -44,6 +45,7 @@ All configuration is done with environment variables:
 | `ADMIN_PASSWORD`        | *(empty → admin disabled)*   | Password for `/admin`. Must be at least 12 characters, or the app refuses to start. Changing it logs out all admins. |
 | `ALLOW_WEAK_ADMIN_PASSWORD` | `0`                      | `1` allows a shorter password. **Local development only.** |
 | `DATABASE`              | `instance/lanparty.sqlite3`  | Path to the SQLite file. It is created automatically. |
+| `DATABASE_URL`          | *(empty → SQLite)*           | PostgreSQL connection URL, e.g. `postgresql://lanparty@db:5432/lanparty`. When set, it replaces `DATABASE`. The password can be part of the URL or come from `PGPASSWORD` (libpq's other `PG*` variables work too). The tables are created at startup. |
 | `HOST` / `PORT`         | `127.0.0.1` / `5000`         | Address for the development server (`python -m lanparty`). |
 | `SESSION_COOKIE_SECURE` | `0`                          | Set this to `1` when you serve the app over HTTPS. The admin cookie is then only sent over HTTPS. |
 | `TRUSTED_PROXIES`       | `0`                          | Number of reverse proxies in front of the app. Needed so that rate limits see the real client IP (see [Deployment](#deployment-notes)). |
@@ -347,8 +349,16 @@ Known limitations:
 .venv/bin/pytest
 ```
 
-The tests use Flask's test client with a separate SQLite database for each test. They cover
-registration, seat selection and conflicts, payment confirmation, moving and removing people,
+The tests use Flask's test client with a separate SQLite database for each test. To run them
+against PostgreSQL, point `LANPARTY_TEST_DATABASE_URL` at an empty database. Each test then gets
+its own schema, and the tests that migrate old SQLite files are skipped:
+
+```bash
+docker run -d --rm --name lanparty-pg-test -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:17-alpine
+LANPARTY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/pytest
+```
+
+They cover registration, seat selection and conflicts, payment confirmation, moving and removing people,
 settings validation and admin access control (`tests/test_app.py`). `tests/test_layout.py` covers
 the layout: geometry, validation (overlaps, bounds, labels, limits), protection of occupied seats,
 and renumbering when a group is renamed. `tests/test_security.py` covers the protections:
@@ -356,9 +366,41 @@ rate limits, session expiry and revocation, rejection of forged cookies, reserva
 one-time login links, input hardening, the audit log, and migration of databases from older versions.
 `tests/test_event_code.py` covers hiding names, the registration check and the limits on code guessing.
 
+## Docker
+
+`docker-compose.yml` runs the app (gunicorn, 4 workers) together with PostgreSQL 17:
+
+```bash
+cp .env.example .env      # set ADMIN_PASSWORD and POSTGRES_PASSWORD, check TIMEZONE
+docker compose up -d --build
+```
+
+The app is then at <http://127.0.0.1:8000>. Settings in `.env`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ADMIN_PASSWORD` | *(required)* | Admin password, at least 12 characters. |
+| `POSTGRES_PASSWORD` | *(required)* | Password of the database user. The database is only reachable inside the compose network; its port is not published. |
+| `TIMEZONE` | `UTC` | Time zone of the event dates. Containers run in UTC, so set this (e.g. `Europe/Berlin`). |
+| `BIND_ADDRESS` / `PORT` | `127.0.0.1` / `8000` | Where the app listens on the host. The default only lets a reverse proxy on the same machine in; use `0.0.0.0` to serve the local network directly. |
+| `TRUSTED_PROXIES` / `SESSION_COOKIE_SECURE` | `0` / `0` | Set both to `1` behind an HTTPS reverse proxy (see [Deployment notes](#deployment-notes)). |
+| `WEB_CONCURRENCY` | `4` | Number of gunicorn worker processes. |
+
+Other variables from [Configuration](#configuration) can be added to the `app` service's
+`environment` in `docker-compose.yml`.
+
+- **Data** lives in the `db-data` volume and survives `docker compose down` and image rebuilds
+  (`docker compose down -v` deletes it). Back it up with
+  `docker compose exec db pg_dump -U lanparty lanparty > backup.sql`.
+- **Custom themes** go into `./themes/<id>/` next to the compose file, which is mounted read-only
+  as `THEMES_DIR`.
+- **Updating:** `git pull && docker compose up -d --build`. The schema is updated at startup.
+- The container runs as an unprivileged user and has a health check on `/api/info`.
+
 ## Deployment notes
 
-- `python -m lanparty` runs Flask's development server. For a real event, use a WSGI server, e.g.:
+- `python -m lanparty` runs Flask's development server. For a real event, use [Docker](#docker)
+  or a WSGI server, e.g.:
   ```bash
   .venv/bin/pip install gunicorn
   .venv/bin/gunicorn -w 2 -b 0.0.0.0:8000 'lanparty:create_app()'
@@ -369,10 +411,13 @@ one-time login links, input hardening, the audit log, and migration of databases
     every visitor seems to come from the proxy's IP, and the per-IP limits apply to everyone together.
     Only set it when a proxy really is in front of the app; otherwise clients can fake their IP.
   - Let the proxy add `Strict-Transport-Security` and remove the `Server` header.
-- Rate limits, sessions and the audit log are stored in SQLite, so they also work with
-  several gunicorn workers.
-- Back up the SQLite file to keep your data. Databases from older versions of the app are
-  upgraded automatically at startup, and existing participant tokens keep working.
+- Rate limits, sessions and the audit log are stored in the database, so they also work with
+  several gunicorn workers. Both databases serialise writes: SQLite with its write lock,
+  PostgreSQL with an advisory lock, so seat picks can't overlap.
+- Back up the SQLite file (or the PostgreSQL database) to keep your data. SQLite databases from
+  older versions of the app are upgraded automatically at startup, and existing participant
+  tokens keep working. There is no automatic copy from SQLite to PostgreSQL: a new PostgreSQL
+  database starts empty.
 - Limitations: the app sends no emails, and PayPal payments are confirmed by hand (there is no
   PayPal API integration).
 

@@ -1,0 +1,44 @@
+# Run the app with PostgreSQL:   cp .env.example .env   (set the passwords)
+#                                docker compose up -d --build
+name: lanparty
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lanparty
+      POSTGRES_USER: lanparty
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # not published: only the app reaches the database, over the compose network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lanparty -d lanparty"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    image: lanparty-seat-selection
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # the password comes from PGPASSWORD, so it needs no URL escaping
+      DATABASE_URL: postgresql://lanparty@db:5432/lanparty
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      TIMEZONE: ${TIMEZONE:-UTC}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-0}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-0}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+    volumes:
+      - ./themes:/data/themes:ro
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000"
+
+volumes:
+  db-data:

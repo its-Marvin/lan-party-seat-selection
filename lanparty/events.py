@@ -138,7 +138,7 @@ def create(copy_from: int | None) -> int:
     db = get_db()
     if copy_from is not None and db.execute("SELECT 1 FROM events WHERE id = ?", (copy_from,)).fetchone() is None:
         raise EventError(tr("The event to copy from does not exist."))
-    event_id = db.execute("INSERT INTO events DEFAULT VALUES").lastrowid
+    event_id = db.insert("INSERT INTO events DEFAULT VALUES")
     if copy_from is not None:
         marks = ",".join("?" * len(COPIED_KEYS))
         db.execute(
