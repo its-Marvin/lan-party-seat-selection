@@ -102,5 +102,8 @@
   "{name} must be an ISO date/time, e.g. 2026-12-12T14:00.": "{name} muss ein ISO-Datum mit Uhrzeit sein, z. B. 2026-12-12T14:00.",
   "{name} must be between {lo} and {hi}.": "{name} muss zwischen {lo} und {hi} liegen.",
   "{n} minutes": "{n} Minuten",
-  "{n} seconds": "{n} Sekunden"
+  "{n} seconds": "{n} Sekunden",
+  "theme.json can't be read ({error}).": "theme.json kann nicht gelesen werden ({error}).",
+  "The themes folder can't be read ({error}).": "Der Theme-Ordner kann nicht gelesen werden ({error}).",
+  "The theme folder can't be read ({error}).": "Der Ordner dieses Themes kann nicht gelesen werden ({error})."
 }

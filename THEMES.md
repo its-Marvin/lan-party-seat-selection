@@ -61,7 +61,8 @@ page marks the result on the `<html>` element as `data-mode="dark"` or `data-mod
 
 A theme whose `theme.css` lacks either block isn't offered. The admin page lists it under the
 theme picker with the reason. Only real rules count: a block that is commented out doesn't, and
-neither does a `theme.css` the app can't read (check the file permissions). A block may be empty (the `default` theme's are) if the standard
+neither does a `theme.css` the app can't read (check the file permissions). If the themes folder
+or a theme folder can't be read at all, the admin page lists that too, and the built-in themes keep working. A block may be empty (the `default` theme's are) if the standard
 colours suit that mode.
 
 ## Step by step

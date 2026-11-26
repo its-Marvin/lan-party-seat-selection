@@ -31,8 +31,10 @@
     document.documentElement.setAttribute("data-mode", mode);
   }
 
-  apply(stored());
-  system.addEventListener("change", () => apply(stored()));
+  // the choice for this page, also when it can't be stored (blocked storage)
+  let current = stored();
+  apply(current);
+  system.addEventListener("change", () => apply(current));
 
   const preview = new URLSearchParams(location.search).get("theme");
   const themeLink = document.getElementById("event-theme");
@@ -43,9 +45,10 @@
   document.addEventListener("DOMContentLoaded", () => {
     const select = document.getElementById("mode-select");
     if (!select) return;
-    select.value = stored();
+    select.value = current;
     select.addEventListener("change", () => {
       const choice = CHOICES.includes(select.value) ? select.value : "auto";
+      current = choice;
       try {
         if (choice === "auto") localStorage.removeItem(KEY);
         else localStorage.setItem(KEY, choice);

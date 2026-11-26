@@ -61,15 +61,19 @@ def _read_theme(folder: Path, builtin: bool) -> Theme:
     theme_id = folder.name
     name, description, problem = theme_id, "", None
     meta = folder / "theme.json"
-    if meta.is_file():
-        try:
+    try:
+        # inside the try: without search permission on the folder, even the
+        # existence check raises (Python < 3.14)
+        if meta.is_file():
             data = json.loads(meta.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("not an object")
             name = str(data.get("name") or theme_id)[:60]
             description = str(data.get("description") or "")[:300]
-        except (ValueError, OSError) as exc:
-            problem = tr("theme.json is not valid JSON ({error}).", error=exc)
+    except OSError as exc:
+        problem = tr("theme.json can't be read ({error}).", error=exc.strerror or exc)
+    except ValueError as exc:
+        problem = tr("theme.json is not valid JSON ({error}).", error=exc)
     css = folder / "theme.css"
     if problem is None:
         try:
@@ -96,10 +100,24 @@ def discover() -> dict[str, Theme]:
     """All theme folders, built-in first. Custom themes can't replace built-in ones."""
     themes: dict[str, Theme] = {}
     for root, builtin in ((builtin_dir(), True), (custom_dir(), False)):
-        if not root.is_dir():
+        try:
+            if not root.is_dir():
+                continue
+            folders = sorted(root.iterdir())
+        except OSError as exc:
+            # e.g. wrong permissions on THEMES_DIR: report it, keep the built-in themes
+            themes[f"unreadable:{root}"] = Theme(
+                str(root), str(root), "", builtin, root,
+                tr("The themes folder can't be read ({error}).", error=exc.strerror or exc))
             continue
-        for folder in sorted(root.iterdir()):
-            if not folder.is_dir() or folder.name.startswith("."):
+        for folder in folders:
+            try:
+                if not folder.is_dir() or folder.name.startswith("."):
+                    continue
+            except OSError as exc:
+                themes[f"unreadable:{folder}"] = Theme(
+                    folder.name, folder.name, "", builtin, folder,
+                    tr("The theme folder can't be read ({error}).", error=exc.strerror or exc))
                 continue
             if not THEME_ID_RE.fullmatch(folder.name):
                 themes[f"invalid:{folder.name}"] = Theme(
