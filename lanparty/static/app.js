@@ -44,8 +44,30 @@ function formatRange(start, end) {
   return formatDateTime(start) + (end ? " – " + formatDateTime(end) : "");
 }
 
+// Open pages follow theme changes (another event opens, an admin picks another
+// theme). Not during a ?theme= preview.
+let appliedTheme = null;
+const themePreview = new URLSearchParams(location.search).has("theme");
+
+/** The theme /theme.css gave this page (it sets --lp-theme), or null if unknown. */
+function loadedTheme() {
+  const value = getComputedStyle(document.documentElement).getPropertyValue("--lp-theme").trim();
+  return value.replace(/^["']|["']$/g, "") || null;
+}
+
+function syncTheme(theme) {
+  if (themePreview) return;
+  // compare with what the page really got, not with the first /api/info answer:
+  // the theme may have changed between loading the stylesheet and that answer
+  if (appliedTheme === null) appliedTheme = loadedTheme();
+  if (theme === appliedTheme) return;
+  $("event-theme").href = `/themes/${encodeURIComponent(theme)}/theme.css`;
+  appliedTheme = theme;
+}
+
 function renderInfo() {
   const info = state.info;
+  syncTheme(info.theme);
   const next = info.upcoming[0];
   const title = info.active ? info.event_name : "LAN Party";
   document.title = `${title} – Seat Registration`;

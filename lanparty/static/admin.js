@@ -8,6 +8,7 @@ let currentEvent = null;
 let eventsCache = [];
 let eventsRendered = null;
 let settingsSaving = false;
+let themesCache = [];
 // Event whose values are in the settings form (the save target); null while
 // another event's values are being loaded, and the form is locked meanwhile.
 let settingsEventId = null;
@@ -324,17 +325,22 @@ async function loadAudit() {
 
 async function loadSettings() {
   const eventId = currentEvent;
-  const data = await api("GET", forEvent("/admin/settings"));
+  // Both answers are needed before anything is filled in, and both are checked
+  // against the selected event and unsaved edits only once they have arrived.
+  const [data, themes] = await Promise.all([api("GET", forEvent("/admin/settings")), api("GET", "/admin/themes")]);
   if (eventId !== currentEvent) return;   // another event was picked meanwhile
   settingsCache = data;
   renderSettingsWarnings();
+  renderThemeList(themes);
   // keep edits that weren't saved yet, as long as they belong to this event
   if (settingsDirty && settingsEventId === eventId) return;
   const f = $("settings-form");
-  for (const key of ["event_name", "registration_opens", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
+  addMissingTheme(settingsCache.theme);
+  for (const key of ["theme", "event_name", "registration_opens", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
     f.elements[key].value = settingsCache[key];
   }
   f.elements.amount.value = (settingsCache.amount_cents / 100).toFixed(2);
+  renderThemeChoice();
   settingsDirty = false;
   settingsEventId = eventId;
   if (!settingsSaving) setSettingsLocked(false);
@@ -344,6 +350,33 @@ function renderSettingsWarnings() {
   const needsCode = !settingsCache.event_code && ["active", "upcoming"].includes(currentEventData()?.status);
   $("event-code-hint").classList.toggle("warning", needsCode);
   $("closed-banner").hidden = !needsCode;
+}
+
+/** Rebuild the theme picker; keeps whatever is selected (it may be an unsaved choice). */
+function renderThemeList(data) {
+  themesCache = data.themes;
+  const select = $("theme-choice");
+  const current = select.value;
+  select.replaceChildren(...data.themes.map((t) => el("option", { value: t.id }, t.builtin ? t.name : `${t.name} (custom)`)));
+  if (current) addMissingTheme(current);
+  select.value = current;
+  $("themes-dir").textContent = data.themes_dir;
+  $("theme-problems").replaceChildren(...data.problems.map((p) =>
+    el("li", {}, `Theme folder "${p.id}" can't be used: ${p.problem}`)));
+}
+
+/** An event's theme stays listed even if its folder is gone. */
+function addMissingTheme(id) {
+  const select = $("theme-choice");
+  if (id && !Array.from(select.options).some((o) => o.value === id)) {
+    select.append(el("option", { value: id }, `${id} (missing – the default theme is shown)`));
+  }
+}
+
+function renderThemeChoice() {
+  const id = $("theme-choice").value;
+  $("theme-preview").href = `/?theme=${encodeURIComponent(id)}`;
+  $("theme-description").textContent = themesCache.find((t) => t.id === id)?.description ?? "";
 }
 
 async function onSaveSettings(event) {
@@ -419,6 +452,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("delete-event").addEventListener("click", deleteEvent);
   $("settings-form").addEventListener("submit", onSaveSettings);
   $("settings-form").addEventListener("input", () => (settingsDirty = true));
+  $("theme-choice").addEventListener("change", renderThemeChoice);
   $("logout").addEventListener("click", async () => {
     await api("POST", "/admin/logout");
     await checkSession();

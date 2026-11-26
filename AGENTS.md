@@ -49,7 +49,9 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/static/app.js` | Public page: access cards, seat map (fit and crop on phones), payment dialog, login links, 15 s polling |
 | `lanparty/static/admin.js` | Admin page: session, participants table, settings, audit log, unsaved-work handling |
 | `lanparty/static/layout-editor.js` | Drag-and-drop layout editor (`window.LayoutEditor`) |
-| `lanparty/static/theme.js` | Auto/Light/Dark theme, loaded **without defer** in `<head>` |
+| `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
+| `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
+| `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
 | `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2` |
 
 ## Rules that must not break
@@ -128,12 +130,16 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - The CSP allows **no inline scripts or inline `style` attributes**. Set styles via CSSOM
   (`node.style.x = …`, `style.setProperty`), and put scripts in separate files.
 - `[hidden]` is forced to `display:none !important`. Use `hidden` to toggle panels.
-- **Colours come only from CSS custom properties** in `style.css`. There are three blocks:
-  dark `:root`, `@media (prefers-color-scheme: light) :root:not([data-theme="dark"])`, and
-  `:root[data-theme="light"]`. Add every new colour token to all three. Keep text contrast at
-  4.5:1 or above (it has been checked; foreground tokens are named `--on-…`).
+- **Colours come only from CSS custom properties** in `style.css`. There are two blocks: dark
+  `:root` and `:root[data-mode="light"]` (`theme.js` always sets `data-mode`). Add every new
+  colour token to both, **and to the `retro` theme's two blocks** (`tests/test_themes.py` checks
+  this and the 4.5:1 text contrast of every built-in theme; add new text pairs to `TEXT_PAIRS`).
+  Fonts and corner radii go through `--font-body`, `--font-mono` and `--radius-scale`.
   Hover states count too: primary buttons use `--accent-hover`, not the brightness filter that
   other buttons get (it pushed white-on-accent below 4.5:1 in light mode).
+- Themes: the public page links `/theme.css` (`@import` of the active event's theme plus
+  `--lp-theme: "<id>"`, which `app.js` reads to know what it got). The admin
+  page doesn't load event themes. Theme files are served only with allowlisted extensions.
 - Public-page polling skips unchanged panels (fingerprints in `rendered`) and keeps focus via
   `data-focus-key` and `keepFocus()`. Keep this when re-rendering.
 - Admin page: never show admin data without a session. Unsaved layout or settings changes stay

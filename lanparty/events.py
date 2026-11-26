@@ -23,7 +23,7 @@ from .db import get_db
 STATUSES = ("draft", "upcoming", "active", "archived")
 # what a new event copies from the one it is based on (dates and code are per event)
 COPIED_KEYS = ("event_name", "location", "description", "paypal_address", "amount_cents",
-               "reservation_hours", "layout")
+               "reservation_hours", "layout", "theme")
 
 
 class EventError(ValueError):
