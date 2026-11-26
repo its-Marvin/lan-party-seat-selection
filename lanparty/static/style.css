@@ -94,6 +94,8 @@ body {
 }
 
 a { color: var(--accent); }
+/* --accent on the header gradient stays just under 4.5:1; --hero-text is made for it */
+.hero a { color: var(--hero-text); text-decoration: underline; }
 h1, h2 { line-height: 1.2; }
 h2 { margin-top: 0; font-size: 1.25rem; }
 

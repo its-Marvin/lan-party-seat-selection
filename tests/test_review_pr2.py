@@ -144,3 +144,19 @@ def test_stacked_cells_wrap_even_when_marked_nowrap():
     assert re.search(r"white-space:\s*normal", rule)
     # the stacked rule wins over .nowrap: same element, higher specificity (0,1,2 vs 0,1,0)
     assert ".nowrap { white-space: nowrap; }" in css
+
+
+# --- links on the header gradient keep 4.5:1 ----------------------------------------
+
+def css_blocks(css):
+    return {" ".join(sel.split()): dict(re.findall(r"--([a-z-]+):\s*(#[0-9a-fA-F]{6})", body))
+            for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", re.sub(r"/\*.*?\*/", "", css, flags=re.S))}
+
+
+def test_header_links_are_readable_on_the_gradient():
+    css = (ROOT / "lanparty" / "static" / "style.css").read_text()
+    assert re.search(r"\.hero a \{[^}]*color:\s*var\(--hero-text\)", css)
+    for tokens in css_blocks(css).values():
+        if {"hero-text", "hero-from", "hero-to"} <= set(tokens):
+            for bg in ("hero-from", "hero-to"):
+                assert contrast(tokens["hero-text"], tokens[bg]) >= 4.5, bg
