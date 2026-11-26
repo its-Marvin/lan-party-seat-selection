@@ -80,13 +80,18 @@ def release(event_id: int | None) -> None:
 
 # --- audit log -------------------------------------------------------------
 
-def audit(actor: str, action: str, **details) -> None:
-    db = get_db()
-    db.execute(
+def record_audit(actor: str, action: str, **details) -> None:
+    """Add an audit entry without committing: use inside ``db.write_transaction()``
+    so the entry describes exactly the change made under that lock."""
+    get_db().execute(
         "INSERT INTO audit_log (actor, action, details) VALUES (?, ?, ?)",
         (actor, action, json.dumps(details, ensure_ascii=False) if details else ""),
     )
-    db.commit()
+
+
+def audit(actor: str, action: str, **details) -> None:
+    record_audit(actor, action, **details)
+    get_db().commit()
 
 
 def audit_entries(limit: int = 200) -> list[dict]:
