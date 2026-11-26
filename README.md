@@ -131,7 +131,9 @@ curious strangers, not as a password. Use 6 characters.
 Both pages are available in **English (en-US)** and **German (de-DE)**. The German texts address
 participants informally (*du*). Visitors get the language of their browser. If it's neither
 English nor German they get English. The selector in the header switches the language and
-remembers the choice in that browser. Dates, times and amounts are formatted for the chosen
+remembers the choice in that browser. If the browser doesn't allow storing it (privacy
+settings), the choice is kept in the address instead (`?lang=de-DE`), and links between the
+public and the admin page carry it along. Dates, times and amounts are formatted for the chosen
 language.
 
 Error messages from the server follow the same language: the browser sends it in the `X-Lang`

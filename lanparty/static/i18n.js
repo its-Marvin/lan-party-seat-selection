@@ -14,8 +14,10 @@
  *   data-i18n-html="key"             → innerHTML (catalog strings only, never user data)
  *   data-i18n-attr="title:key;aria-label:key2"
  *
- * The language comes from the visitor's choice (localStorage), else the
- * browser languages, else English. Loaded without `defer` in <head>.
+ * The language comes from a ?lang= parameter, else the visitor's choice
+ * (localStorage), else the browser languages, else English. The parameter is
+ * how a choice survives the reload when localStorage can't be written (privacy
+ * settings); links between the two pages keep it. Loaded without `defer` in <head>.
  */
 window.I18N = (() => {
   const KEY = "lanparty.lang";
@@ -23,7 +25,10 @@ window.I18N = (() => {
   const FALLBACK = "en-US";
   const catalogs = {};
 
+  const urlLang = new URLSearchParams(location.search).get("lang");
+
   function detect() {
+    if (LANGUAGES.includes(urlLang)) return urlLang;
     try {
       const stored = localStorage.getItem(KEY);
       if (LANGUAGES.includes(stored)) return stored;
@@ -89,13 +94,30 @@ window.I18N = (() => {
 
   function setLang(language) {
     if (!LANGUAGES.includes(language) || language === lang) return;
-    try { localStorage.setItem(KEY, language); } catch { /* only for this page */ }
+    let remembered = false;
+    try {
+      localStorage.setItem(KEY, language);
+      remembered = localStorage.getItem(KEY) === language;
+    } catch { /* storage blocked: carry the choice in the URL instead */ }
+    const url = new URL(location.href);
+    if (remembered) url.searchParams.delete("lang");
+    else url.searchParams.set("lang", language);
     // every panel is rebuilt in the new language; unsaved admin edits trigger the usual warning
-    location.reload();
+    if (url.href === location.href) location.reload();
+    else location.assign(url.href);
+  }
+
+  /** Keep a ?lang= choice when following links between the public and the admin page. */
+  function keepLangInLinks() {
+    if (!LANGUAGES.includes(urlLang)) return;
+    document.querySelectorAll('a[href="/"], a[href="/admin"]').forEach((a) => {
+      a.setAttribute("href", `${a.getAttribute("href")}?lang=${encodeURIComponent(urlLang)}`);
+    });
   }
 
   document.addEventListener("DOMContentLoaded", () => {
     apply();
+    keepLangInLinks();
     const select = document.getElementById("lang-select");
     if (select) {
       select.value = lang;
