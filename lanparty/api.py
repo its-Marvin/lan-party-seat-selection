@@ -172,6 +172,13 @@ def release_expired_reservations():
     if not get_db().execute(expired_sql, window).fetchone():
         return  # cheap check without taking the write lock
     with write_transaction() as db:
+        # The event may have ended (or its settings changed) while this request
+        # waited for the lock: decide again from fresh values.
+        event = cfg.load(event_id)
+        hours = event["reservation_hours"]
+        if ev.status(event) != "active" or hours <= 0:
+            return
+        window = (event_id, f"-{hours} hours")
         # read the rows (with their seats) and clear them under the same lock
         released = db.execute(expired_sql, window).fetchall()
         db.executemany(
@@ -179,9 +186,9 @@ def release_expired_reservations():
             "reserved_ip_hash = NULL WHERE id = ? AND paid = 0",
             [(r["id"],) for r in released],
         )
-    for r in released:
-        sec.audit("system", "reservation.expired", user_id=r["id"], name=r["name"],
-                  email=r["email"], seat=r["seat"], after_hours=hours, event_id=event_id)
+        for r in released:
+            sec.record_audit("system", "reservation.expired", user_id=r["id"], name=r["name"],
+                             email=r["email"], seat=r["seat"], after_hours=hours, event_id=event_id)
 
 
 # --- serialisation -------------------------------------------------------
@@ -570,7 +577,9 @@ def admin_required(view):
     def wrapper(*args, **kwargs):
         if not conf("ADMIN_PASSWORD"):
             raise ApiError(401, "Admin login required.")
-        session = sec.current_admin_session()
+        # background polling (X-Background: 1) must not count as admin activity,
+        # or an unattended tab would never reach the idle timeout
+        session = sec.current_admin_session(refresh=request.headers.get("X-Background") != "1")
         if session is None:
             raise ApiError(401, "Admin login required.")
         g.admin = session

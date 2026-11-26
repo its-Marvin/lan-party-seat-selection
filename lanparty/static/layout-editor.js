@@ -14,11 +14,15 @@ window.LayoutEditor = (() => {
     dirty: false,
     revision: 0,          // bumped on every draft change
     saving: false,        // a PUT is in flight
-    eventId: null,        // event whose layout is being edited
+    eventId: null,        // event the draft belongs to (save target)
+    loadingEventId: null, // event whose layout is being fetched; saving waits for it
+    loadFailed: false,    // the last load failed: the draft doesn't match the page any more
     readOnly: false,      // archived event: the layout can't be saved
   };
 
-  const seatsPath = () => `/admin/seats?event=${encodeURIComponent(ed.eventId)}`;
+  const seatsPath = (eventId) => `/admin/seats?event=${encodeURIComponent(eventId)}`;
+  /** Saving is only allowed while the draft belongs to the event the page shows. */
+  const canSave = () => ed.dirty && !ed.saving && !ed.readOnly && ed.loadingEventId === null && !ed.loadFailed;
 
   const clone = (x) => JSON.parse(JSON.stringify(x));
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -45,9 +49,25 @@ window.LayoutEditor = (() => {
 
   /** Load the stored layout of `eventId` (default: the event loaded last), dropping the draft. */
   async function load(eventId = ed.eventId) {
+    // The draft keeps its event id until the new layout has arrived: a save in
+    // the meantime is blocked instead of writing the old draft to the new event.
+    ed.loadingEventId = eventId;
+    if (ed.draft) renderSummary();
+    let data;
+    try {
+      data = await api("GET", seatsPath(eventId));
+    } catch (err) {
+      if (ed.loadingEventId === eventId) {
+        ed.loadingEventId = null;
+        ed.loadFailed = true;
+        if (ed.draft) renderSummary();
+      }
+      throw err;
+    }
+    if (ed.loadingEventId !== eventId) return;   // another event was picked meanwhile
+    ed.loadingEventId = null;
+    ed.loadFailed = false;
     ed.eventId = eventId;
-    const data = await api("GET", seatsPath());
-    if (ed.eventId !== eventId) return;   // another event was picked meanwhile
     ed.saved = data.layout;
     ed.draft = clone(data.layout);
     ed.draft.items = ed.draft.items || [];
@@ -57,7 +77,9 @@ window.LayoutEditor = (() => {
     render();
   }
 
-  function setOccupancy(seats, rerender = true) {
+  /** Occupancy of `eventId` (ignored if the editor shows another event). */
+  function setOccupancy(seats, rerender = true, eventId = ed.eventId) {
+    if (eventId !== ed.eventId) return;
     ed.occupancy = new Map(seats.filter((s) => s.status !== "free").map((s) => [s.id, s]));
     if (rerender && ed.draft) renderCanvas();
   }
@@ -156,7 +178,7 @@ window.LayoutEditor = (() => {
     byId("layout-summary").textContent =
       `${groups.length} groups · ${tables} tables · ${tables * SEATS_PER_TABLE} seats · ${items} area elements` +
       (ed.dirty ? " · unsaved changes" : "");
-    byId("save-layout").disabled = !ed.dirty || ed.saving || ed.readOnly;
+    byId("save-layout").disabled = !canSave();
     byId("save-layout").textContent = ed.saving ? "Saving…" : "Save layout";
     byId("discard-layout").disabled = !ed.dirty || ed.saving;
   }
@@ -486,7 +508,7 @@ window.LayoutEditor = (() => {
     showMessage(msg, "");
     // Send a snapshot: the editor stays usable while the request is pending, and
     // changes made in the meantime must not be replaced by the reloaded layout.
-    if (ed.readOnly) return;
+    if (!canSave()) return;
     const submitted = clone(ed.draft);
     const revision = ed.revision;
     const eventId = ed.eventId;
@@ -521,7 +543,7 @@ window.LayoutEditor = (() => {
 
   /** Take the stored layout and occupancy from the server but keep the draft. */
   async function refreshSaved() {
-    const data = await api("GET", seatsPath());
+    const data = await api("GET", seatsPath(ed.eventId));
     ed.saved = data.layout;
     setOccupancy(data.seats, false);
     renderCanvas();     // not the side panel: the admin may be typing in it
@@ -567,5 +589,6 @@ window.LayoutEditor = (() => {
     load, setOccupancy, setReadOnly,
     isDirty: () => ed.dirty,
     isSaving: () => ed.saving,
+    eventId: () => ed.eventId,
   };
 })();

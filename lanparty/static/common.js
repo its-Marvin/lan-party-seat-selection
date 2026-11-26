@@ -23,8 +23,10 @@ function setToken(token) {
   } catch { /* storage unavailable */ }
 }
 
-async function api(method, path, body) {
+/** `options.background`: a poll the user didn't trigger; it doesn't keep an admin session alive. */
+async function api(method, path, body, options = {}) {
   const headers = { "Accept": "application/json" };
+  if (options.background) headers["X-Background"] = "1";
   const token = getToken();
   if (token) headers["X-User-Token"] = token;
   const eventCode = getEventCode();
