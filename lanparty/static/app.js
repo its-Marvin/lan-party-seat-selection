@@ -40,20 +40,31 @@ function formatDeadline(iso) {
   return iso ? formatDateTime(iso) : "";
 }
 
+function formatRange(start, end) {
+  return formatDateTime(start) + (end ? " – " + formatDateTime(end) : "");
+}
+
 function renderInfo() {
   const info = state.info;
-  document.title = `${info.event_name} – Seat Registration`;
-  $("event-name").textContent = info.event_name;
+  const next = info.upcoming[0];
+  const title = info.active ? info.event_name : "LAN Party";
+  document.title = `${title} – Seat Registration`;
+  $("event-name").textContent = title;
   const facts = $("event-facts");
   facts.replaceChildren();
-  if (info.event_start) {
-    const when = formatDateTime(info.event_start) +
-      (info.event_end ? " – " + formatDateTime(info.event_end) : "");
-    facts.append(el("li", {}, el("strong", {}, "When: "), when));
+  if (info.active) {
+    if (info.event_start) facts.append(el("li", {}, el("strong", {}, "When: "), formatRange(info.event_start, info.event_end)));
+    if (info.location) facts.append(el("li", {}, el("strong", {}, "Where: "), info.location));
+    facts.append(el("li", {}, el("strong", {}, "Fee: "), formatMoney(info.amount_cents)));
+    facts.append(el("li", {}, el("strong", {}, "Seats: "), String(info.seat_count)));
   }
-  if (info.location) facts.append(el("li", {}, el("strong", {}, "Where: "), info.location));
-  facts.append(el("li", {}, el("strong", {}, "Fee: "), formatMoney(info.amount_cents)));
-  facts.append(el("li", {}, el("strong", {}, "Seats: "), String(info.seat_count)));
+
+  $("no-event-card").hidden = info.active;
+  $("seat-card").hidden = !info.active;
+  $("no-event-text").textContent = next
+    ? `Registration for ${next.event_name} opens ${formatDateTime(next.registration_opens)}.`
+    : "There's no event open for registration at the moment. Check back later!";
+  renderUpcoming(info.upcoming);
 
   const hours = info.login_link_hours;
   if (hours) {
@@ -61,8 +72,18 @@ function renderInfo() {
       ? `${hours / 24} day${hours === 24 ? "" : "s"}` : `${hours} hour${hours === 1 ? "" : "s"}`;
   }
 
-  $("about").hidden = !info.description;
+  $("about").hidden = !info.active || !info.description;
   $("event-description").textContent = info.description;
+}
+
+function renderUpcoming(upcoming) {
+  $("upcoming-card").hidden = !upcoming.length;
+  $("upcoming-list").replaceChildren(...upcoming.map((e) => el("li", {},
+    el("strong", {}, e.event_name),
+    e.event_start ? el("span", {}, formatRange(e.event_start, e.event_end)) : null,
+    e.location ? el("span", { class: "muted" }, e.location) : null,
+    el("span", { class: "small muted" }, `Registration opens ${formatDateTime(e.registration_opens)}`),
+  )));
 }
 
 /** Forget a generated login link – it belongs to the account that created it. */
@@ -141,9 +162,10 @@ function keepFocus(container) {
 /** Show the event-code card or the registration form, depending on what the visitor has unlocked. */
 function renderAccess() {
   const open = !!state.info?.registration_open;
+  const active = !!state.info?.active;
   const me = !!state.me;
   // Seeing names (admins do) is not the same as holding the registration code.
-  $("closed-card").hidden = open || me;
+  $("closed-card").hidden = open || me || !active;
   $("code-card").hidden = !open || me || state.codeOk;
   $("register-card").hidden = !open || me || !state.codeOk;
   $("names-hint").hidden = state.namesVisible;
@@ -165,8 +187,8 @@ async function loadSeats() {
   const fingerprint = JSON.stringify([data.layout, data.seats]);
   if (fingerprint === rendered.seats) return;
   rendered.seats = fingerprint;
-  state.seatData = data;
-  renderSeatMap(data);
+  state.seatData = data.layout ? data : null;   // no layout: no event is active
+  if (data.layout) renderSeatMap(data);
 }
 
 const MIN_SEAT_PX = 26;   // smallest seat size we shrink to on narrow screens

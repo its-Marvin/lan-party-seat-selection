@@ -33,6 +33,11 @@
       <p id="event-description" class="prewrap"></p>
     </section>
 
+    <section class="card" id="no-event-card" hidden>
+      <h2>No event open right now</h2>
+      <p class="muted" id="no-event-text">There's no event open for registration at the moment. Check back later!</p>
+    </section>
+
     <section class="card" id="closed-card" hidden>
       <h2>Registration hasn't opened yet</h2>
       <p class="muted">Check back later. You'll get the event code with your invitation.</p>
@@ -84,7 +89,7 @@
       <p id="me-msg" class="message"></p>
     </section>
 
-    <section class="card">
+    <section class="card" id="seat-card">
       <h2 id="seat-heading">Choose your seat</h2>
       <div class="legend">
         <span><i class="seat-dot free"></i>free</span>
@@ -97,6 +102,11 @@
       <div id="seat-map" class="seat-map" aria-label="Seat map"></div>
       <p id="seat-msg" class="message"></p>
       <p class="muted small" id="seat-stats"></p>
+    </section>
+
+    <section class="card" id="upcoming-card" hidden>
+      <h2>Upcoming events</h2>
+      <ul class="upcoming" id="upcoming-list"></ul>
     </section>
   </main>
 

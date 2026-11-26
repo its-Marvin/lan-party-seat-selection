@@ -14,7 +14,11 @@ window.LayoutEditor = (() => {
     dirty: false,
     revision: 0,          // bumped on every draft change
     saving: false,        // a PUT is in flight
+    eventId: null,        // event whose layout is being edited
+    readOnly: false,      // archived event: the layout can't be saved
   };
+
+  const seatsPath = () => `/admin/seats?event=${encodeURIComponent(ed.eventId)}`;
 
   const clone = (x) => JSON.parse(JSON.stringify(x));
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -39,8 +43,11 @@ window.LayoutEditor = (() => {
 
   // --- data ------------------------------------------------------------
 
-  async function load() {
-    const data = await api("GET", "/seats");
+  /** Load the stored layout of `eventId` (default: the event loaded last), dropping the draft. */
+  async function load(eventId = ed.eventId) {
+    ed.eventId = eventId;
+    const data = await api("GET", seatsPath());
+    if (ed.eventId !== eventId) return;   // another event was picked meanwhile
     ed.saved = data.layout;
     ed.draft = clone(data.layout);
     ed.draft.items = ed.draft.items || [];
@@ -149,7 +156,7 @@ window.LayoutEditor = (() => {
     byId("layout-summary").textContent =
       `${groups.length} groups · ${tables} tables · ${tables * SEATS_PER_TABLE} seats · ${items} area elements` +
       (ed.dirty ? " · unsaved changes" : "");
-    byId("save-layout").disabled = !ed.dirty || ed.saving;
+    byId("save-layout").disabled = !ed.dirty || ed.saving || ed.readOnly;
     byId("save-layout").textContent = ed.saving ? "Saving…" : "Save layout";
     byId("discard-layout").disabled = !ed.dirty || ed.saving;
   }
@@ -479,12 +486,14 @@ window.LayoutEditor = (() => {
     showMessage(msg, "");
     // Send a snapshot: the editor stays usable while the request is pending, and
     // changes made in the meantime must not be replaced by the reloaded layout.
+    if (ed.readOnly) return;
     const submitted = clone(ed.draft);
     const revision = ed.revision;
+    const eventId = ed.eventId;
     ed.saving = true;
     renderSummary();
     try {
-      const res = await api("PUT", "/admin/layout", submitted);
+      const res = await api("PUT", `/admin/layout?event=${encodeURIComponent(eventId)}`, submitted);
       const moved = Object.keys(res.moved || {}).length;
       const movedText = moved ? ` ${moved} participant(s) got new seat numbers.` : "";
       document.dispatchEvent(new CustomEvent("layout-saved"));
@@ -512,7 +521,7 @@ window.LayoutEditor = (() => {
 
   /** Take the stored layout and occupancy from the server but keep the draft. */
   async function refreshSaved() {
-    const data = await api("GET", "/seats");
+    const data = await api("GET", seatsPath());
     ed.saved = data.layout;
     setOccupancy(data.seats, false);
     renderCanvas();     // not the side panel: the admin may be typing in it
@@ -547,5 +556,16 @@ window.LayoutEditor = (() => {
     });
   });
 
-  return { load, setOccupancy, isDirty: () => ed.dirty };
+  /** Archived events: editing still works as a preview, but nothing can be saved. */
+  function setReadOnly(readOnly) {
+    ed.readOnly = readOnly;
+    byId("layout-readonly").hidden = !readOnly;
+    if (ed.draft) renderSummary();
+  }
+
+  return {
+    load, setOccupancy, setReadOnly,
+    isDirty: () => ed.dirty,
+    isSaving: () => ed.saving,
+  };
 })();

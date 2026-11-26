@@ -7,13 +7,21 @@ from lanparty.db import get_db
 EVENT_CODE = "TEST42"
 
 
-def set_event_code(app, code=EVENT_CODE):
+def first_event_id(db) -> int:
+    return db.execute("SELECT MIN(id) FROM events").fetchone()[0]
+
+
+def set_event_setting(app, key, value, event_id=None):
     with app.app_context():
         db = get_db()
         db.execute(
-            "INSERT INTO settings (key, value) VALUES ('event_code', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (code,),
+            "INSERT INTO event_settings (event_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(event_id, key) DO UPDATE SET value = excluded.value",
+            (event_id or first_event_id(db), key, value),
         )
         db.commit()
     return app
+
+
+def set_event_code(app, code=EVENT_CODE):
+    return set_event_setting(app, "event_code", code)

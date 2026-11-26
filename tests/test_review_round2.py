@@ -25,8 +25,8 @@ def test_concurrent_partial_date_updates_stay_consistent(app, admin, monkeypatch
 
     original = cfg.validate_update
 
-    def slow_validate(data):
-        out = original(data)
+    def slow_validate(data, event_id):
+        out = original(data, event_id)
         time.sleep(0.2)            # widen the window between validation and save
         return out
 
@@ -134,8 +134,8 @@ def test_seat_plan_is_one_consistent_snapshot(app, monkeypatch):
     real_load = lay.load
     outcome = {}
 
-    def load_then_concurrent_write():
-        layout = real_load()
+    def load_then_concurrent_write(event_id):
+        layout = real_load(event_id)
         # another worker tries to move the reservation between the two reads
         other = sqlite3.connect(app.config["DATABASE"], timeout=0.3)
         try:

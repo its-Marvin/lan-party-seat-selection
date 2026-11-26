@@ -50,6 +50,8 @@ def create_app(config: dict | None = None) -> Flask:
         ADMIN_SESSION_IDLE_MINUTES=_env_int("ADMIN_SESSION_IDLE_MINUTES", 60),
         ADMIN_SESSION_MAX_HOURS=_env_int("ADMIN_SESSION_MAX_HOURS", 12),
         LOGIN_CODE_HOURS=_env_int("LOGIN_CODE_HOURS", 7 * 24),
+        # IANA time zone of the event dates (e.g. Europe/Berlin); empty = server time
+        TIMEZONE=os.environ.get("TIMEZONE", "").strip(),
     )
     if config:
         app.config.update(config)
@@ -63,6 +65,15 @@ def create_app(config: dict | None = None) -> Flask:
             f"ADMIN_PASSWORD must be at least {MIN_ADMIN_PASSWORD_LENGTH} characters long "
             "(set ALLOW_WEAK_ADMIN_PASSWORD=1 for local development only)."
         )
+
+    if app.config["TIMEZONE"]:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        try:
+            ZoneInfo(app.config["TIMEZONE"])
+        except (ZoneInfoNotFoundError, ValueError):
+            raise RuntimeError(
+                f"Unknown TIMEZONE {app.config['TIMEZONE']!r} (use an IANA name like Europe/Berlin)."
+            ) from None
 
     if app.config["TRUSTED_PROXIES"] > 0:
         n = app.config["TRUSTED_PROXIES"]

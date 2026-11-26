@@ -45,6 +45,22 @@
     </section>
 
     <div id="admin-area" hidden>
+      <section class="card" id="event-card">
+        <h2>Event</h2>
+        <div class="event-bar">
+          <label>Show and edit <select id="event-select"></select></label>
+          <button type="button" id="new-event" title="Copies the settings (without dates and event code) and the seat layout">+ New event</button>
+          <button type="button" id="delete-event" class="danger">Delete event</button>
+        </div>
+        <p id="event-status" class="small"></p>
+        <p class="muted small">
+          An event goes live automatically when its registration opens and is archived when it ends.
+          Only one event can be open at a time, so registration can only open after the previous event has ended.
+          <span id="event-timezone"></span>
+        </p>
+        <p id="event-msg" class="message"></p>
+      </section>
+
       <p class="card banner warning" id="closed-banner" hidden>
         ⚠️ No event code is set, so <strong>registration is closed</strong> and visitors can't see any names.
         Set a code under Settings → Access to open registration.
@@ -142,6 +158,9 @@
             </form>
           </aside>
         </div>
+        <p id="layout-readonly" class="muted small" hidden>
+          This event is archived: you can look at its seat plan, but changes can't be saved.
+        </p>
         <ul id="layout-problems" class="problems"></ul>
         <p id="layout-msg" class="message"></p>
       </section>
@@ -152,6 +171,7 @@
           <fieldset>
             <legend>Event</legend>
             <label>Name <input name="event_name" required maxlength="120"></label>
+            <label>Registration opens <input name="registration_opens" type="datetime-local"></label>
             <label>Start <input name="event_start" type="datetime-local"></label>
             <label>End <input name="event_end" type="datetime-local"></label>
             <label>Location <input name="location" maxlength="200"></label>

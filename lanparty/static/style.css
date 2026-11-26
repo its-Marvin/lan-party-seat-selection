@@ -143,6 +143,20 @@ h2 { margin-top: 0; font-size: 1.25rem; }
   margin-bottom: 1.25rem;
 }
 
+.upcoming { list-style: none; padding: 0; margin: 0; display: grid; gap: .75rem; }
+.upcoming li {
+  display: flex; flex-direction: column; gap: .15rem;
+  padding: .6rem .8rem; border: 1px solid var(--border); border-radius: 8px;
+}
+
+/* admin: event picker */
+.event-bar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: flex-end; }
+.event-bar label { flex: 1 1 260px; min-width: 0; }
+.event-bar select { width: 100%; }  /* long event names must not widen the page */
+.badge.status-active { background: var(--paid); color: var(--on-paid); }
+.badge.status-upcoming { background: var(--accent); color: var(--on-accent); }
+.badge.status-archived, .badge.status-draft { background: var(--free); color: var(--text); }
+
 .muted { color: var(--muted); }
 .small { font-size: .875rem; }
 .prewrap { white-space: pre-wrap; }

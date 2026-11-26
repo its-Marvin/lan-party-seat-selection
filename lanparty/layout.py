@@ -200,9 +200,9 @@ def validate(data) -> dict:
 
 # --- storage -------------------------------------------------------------
 
-def load() -> dict:
+def load(event_id: int) -> dict:
     row = get_db().execute(
-        "SELECT value FROM settings WHERE key = ?", (SETTINGS_KEY,)
+        "SELECT value FROM event_settings WHERE event_id = ? AND key = ?", (event_id, SETTINGS_KEY)
     ).fetchone()
     if row is None:
         return json.loads(json.dumps(DEFAULT_LAYOUT))
@@ -249,16 +249,16 @@ def plan_seat_moves(old: dict, new: dict, occupied: list[str]) -> tuple[dict, li
     return moves, lost
 
 
-def save(layout: dict, moves: dict) -> None:
-    """Store the layout and apply seat renames; call inside ``write_transaction``."""
+def save(layout: dict, moves: dict, event_id: int) -> None:
+    """Store an event's layout and apply seat renames; call inside ``write_transaction``."""
     db = get_db()
-    # two passes so that swapping labels (A<->B) never violates UNIQUE(seat)
+    # two passes so that swapping labels (A<->B) never violates UNIQUE(event_id, seat)
     for old in moves:
-        db.execute("UPDATE users SET seat = ? WHERE seat = ?", ("~" + old, old))
+        db.execute("UPDATE users SET seat = ? WHERE event_id = ? AND seat = ?", ("~" + old, event_id, old))
     for old, new in moves.items():
-        db.execute("UPDATE users SET seat = ? WHERE seat = ?", (new, "~" + old))
+        db.execute("UPDATE users SET seat = ? WHERE event_id = ? AND seat = ?", (new, event_id, "~" + old))
     db.execute(
-        "INSERT INTO settings (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (SETTINGS_KEY, json.dumps(layout)),
+        "INSERT INTO event_settings (event_id, key, value) VALUES (?, ?, ?) "
+        "ON CONFLICT(event_id, key) DO UPDATE SET value = excluded.value",
+        (event_id, SETTINGS_KEY, json.dumps(layout)),
     )

@@ -317,10 +317,8 @@ def test_item_overlapping_group_rejected_by_api(admin):
 
 
 def test_layout_saved_without_items_loads_with_empty_list(app, admin):
-    with app.app_context():
-        from lanparty.db import get_db
-        db = get_db()
-        db.execute("INSERT INTO settings (key, value) VALUES ('layout', ?)",
-                   ('{"area": {"width": 10, "height": 10}, "groups": []}',))
-        db.commit()
-    assert admin.get("/api/admin/layout").get_json()["items"] == []
+    from tests.helpers import set_event_setting
+
+    set_event_setting(app, "layout", '{"area": {"width": 10, "height": 10}, "groups": []}')
+    layout = admin.get("/api/admin/layout").get_json()
+    assert layout["area"] == {"width": 10, "height": 10} and layout["items"] == []

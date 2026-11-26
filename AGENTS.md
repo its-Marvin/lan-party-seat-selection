@@ -39,15 +39,16 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/__init__.py` | `create_app(config)`: reads config from env, adds security headers (strict CSP), JSON error handlers for `/api`, routes `/`, `/admin`, `/favicon.ico` (204) |
 | `lanparty/api.py` | Blueprint `/api`: participant, login-link, event-code and admin endpoints; `assign_seat()`; reservation expiry in `before_request` |
 | `lanparty/db.py` | Schema, `get_db()`, `write_transaction()` (BEGIN IMMEDIATE), `read_snapshot()` (deferred read txn), `_migrate()` |
-| `lanparty/settings.py` | Event, payment and access settings: `DEFAULTS`, `load()`, `validate_update()`, `save()` (does **not** commit) |
-| `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `save()` (no commit) |
+| `lanparty/events.py` | Events and their status from dates (`local_now()` in `TIMEZONE`), `active_id()` (cached in `g`), `default_admin_id()`, overlap check, `create()`/`delete()` (no commit) |
+| `lanparty/settings.py` | Per-event settings: `DEFAULTS`, `load(event_id)`, `validate_update(data, event_id)`, `save(values, event_id)` (does **not** commit) |
+| `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `load(event_id)`, `save(layout, moves, event_id)` (no commit) |
 | `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions |
 | `lanparty/static/common.js` | `api()`, token and event-code storage, `el()`, `showMessage`, `buildArea()` (shared seat-map renderer, optional `view` crop), `contentBounds()` |
 | `lanparty/static/app.js` | Public page: access cards, seat map (fit and crop on phones), payment dialog, login links, 15 s polling |
 | `lanparty/static/admin.js` | Admin page: session, participants table, settings, audit log, unsaved-work handling |
 | `lanparty/static/layout-editor.js` | Drag-and-drop layout editor (`window.LayoutEditor`) |
 | `lanparty/static/theme.js` | Auto/Light/Dark theme, loaded **without defer** in `<head>` |
-| `tests/` | `helpers.py` (`EVENT_CODE`, `set_event_code`), `test_app`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2` |
+| `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2` |
 
 ## Rules that must not break
 
@@ -65,6 +66,24 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   event code).
 - Schema changes go in both `SCHEMA` and `_migrate()`. `_migrate()` takes the write lock
   **before** inspecting columns. Old DBs must keep working (tests cover this).
+
+### Events
+- Per-event data lives in `event_settings(event_id, key, value)` (settings **and** the layout under
+  key `layout`). The global `settings` table only holds app-wide values such as the IP pepper.
+- `users.event_id`: email and seat are unique **per event** (`UNIQUE(event_id, …)`). Every query on
+  `users` must filter by event. Participants, tokens and login codes only count for the **active**
+  event (`current_user()`, `lookup_login_code()`).
+- The status comes from the dates; there is no stored "active" flag: draft (no `registration_opens`),
+  upcoming, active, archived (`now >= event_end`). Registration windows `[registration_opens,
+  event_end)` must not overlap (checked in `settings.validate_update` inside the write transaction).
+- Anything that depends on the status and then writes (seat changes, registration, payments,
+  layout saves) re-reads it **inside** `write_transaction()` via `ev.status(cfg.load(id))`. Don't
+  rely on the per-request cache there.
+- Archived events: participants and layout are read-only (409); settings stay editable so a wrong
+  end date can be fixed; removing people is allowed (data deletion).
+- Admin endpoints take `?event=<id>` (`admin_event_id()`); the admin UI always sends it.
+- Migration: an old single-event DB becomes event 1 with `registration_opens` = migration time.
+  The `users` table is rebuilt (with `PRAGMA foreign_keys = OFF` around the transaction).
 
 ### Seats and layout
 - Seat id = group label + number (`A1`…). Table `t` holds seats `2t+1` and `2t+2`.

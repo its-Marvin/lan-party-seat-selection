@@ -3,6 +3,18 @@
 const $ = (id) => document.getElementById(id);
 let settingsCache = null;
 
+// The event shown and edited on this page (null until the event list is loaded).
+let currentEvent = null;
+let eventsCache = [];
+let eventsRendered = null;
+let settingsSaving = false;
+
+const forEvent = (path) => `${path}${path.includes("?") ? "&" : "?"}event=${encodeURIComponent(currentEvent)}`;
+const currentEventData = () => eventsCache.find((e) => e.id === currentEvent) || null;
+const isArchived = () => currentEventData()?.status === "archived";
+
+const STATUS_LABELS = { active: "active", upcoming: "upcoming", draft: "draft", archived: "archived" };
+
 // Settings typed into the form but not saved yet. Kept (like an unsaved layout
 // draft) across a sign-in after the session expired, instead of being reloaded.
 let settingsDirty = false;
@@ -28,10 +40,108 @@ async function checkSession() {
     return;
   }
   showMessage($("login-msg"), "");
+  await loadEvents();
   await loadSettings();
-  if (!window.LayoutEditor.isDirty()) await window.LayoutEditor.load();
+  if (!window.LayoutEditor.isDirty()) await window.LayoutEditor.load(currentEvent);
   await loadUsers();
   await loadAudit();
+}
+
+/** Load the event list; keeps the selected event if it still exists. */
+async function loadEvents() {
+  const data = await api("GET", "/admin/events");
+  eventsCache = data.events;
+  if (!eventsCache.some((e) => e.id === currentEvent)) currentEvent = data.default_id;
+  $("event-timezone").textContent = data.timezone ? `Dates and times are in ${data.timezone}.` : "";
+  // rebuilding the options would close the dropdown if it is open: only on change
+  const fingerprint = JSON.stringify([currentEvent, eventsCache.map((e) => [e.id, e.event_name, e.status, e.event_start])]);
+  if (fingerprint !== eventsRendered) {
+    eventsRendered = fingerprint;
+    $("event-select").replaceChildren(...eventsCache.map((e) => el("option", {
+    value: e.id, selected: e.id === currentEvent,
+    }, `${e.event_name} – ${STATUS_LABELS[e.status]}${e.event_start ? ` (${formatDateTime(e.event_start)})` : ""}`)));
+  }
+  renderEventStatus();
+}
+
+function renderEventStatus() {
+  const e = currentEventData();
+  if (!e) return;
+  const badge = el("span", { class: `badge status-${e.status}` }, STATUS_LABELS[e.status]);
+  const text = {
+    active: `Registration is open since ${formatDateTime(e.registration_opens)}` +
+      (e.event_end ? `; the event is archived automatically when it ends (${formatDateTime(e.event_end)}).` : "; no end is set, so it stays open."),
+    upcoming: `Registration opens ${formatDateTime(e.registration_opens)}. Until then only admins see this event; it's listed publicly as upcoming.`,
+    draft: "Not scheduled yet: set \"Registration opens\" in the settings below. Only admins see drafts.",
+    archived: `The event ended ${formatDateTime(e.event_end)}. Participants and the seat plan are read-only; settings can still be corrected.`,
+  }[e.status];
+  $("event-status").replaceChildren(badge, " ", text, " ",
+    el("span", { class: "muted" }, `${e.registered} registered · ${e.seated} seated · ${e.paid} paid`));
+  $("delete-event").disabled = e.status === "active" || eventsCache.length <= 1;
+  $("delete-event").title = e.status === "active" ? "The active event can't be deleted" : "";
+  window.LayoutEditor.setReadOnly(e.status === "archived");
+}
+
+/** Show another event; `force` skips the unsaved-changes question (e.g. after deleting). */
+async function switchEvent(eventId, force = false) {
+  const unsaved = force ? [] : unsavedWork();
+  if (window.LayoutEditor.isSaving() || settingsSaving) {
+    $("event-select").value = currentEvent;
+    showMessage($("event-msg"), "Please wait until saving has finished.", "info");
+    return;
+  }
+  if (unsaved.length && !confirm(`Discard your unsaved ${unsaved.join(" and ")} changes?`)) {
+    $("event-select").value = currentEvent;
+    return;
+  }
+  currentEvent = eventId;
+  settingsDirty = false;
+  showMessage($("event-msg"), "");
+  for (const id of ["settings-msg", "layout-msg", "users-msg"]) showMessage($(id), "");
+  try {
+    renderEventStatus();
+    await loadSettings();
+    await window.LayoutEditor.load(currentEvent);
+    await loadUsers();
+  } catch (err) {
+    showMessage($("event-msg"), err.message);
+    if (err.status === 401) await checkSession();
+  }
+}
+
+async function createEvent() {
+  const base = currentEventData();
+  if (!confirm(`Create a new event based on "${base.event_name}"?\n\n` +
+               "It copies the settings and the seat layout, but not the dates, the event code or any participants.")) return;
+  try {
+    const { event } = await api("POST", "/admin/events", { copy_from: base.id });
+    await loadEvents();
+    $("event-select").value = event.id;
+    await switchEvent(event.id);
+    showMessage($("event-msg"), "New event created. Set its dates and event code in the settings below.", "success");
+    await loadAudit();
+  } catch (err) {
+    showMessage($("event-msg"), err.message);
+    if (err.status === 401) await checkSession();
+  }
+}
+
+async function deleteEvent() {
+  const e = currentEventData();
+  const people = e.registered ? ` and its ${e.registered} participant(s) with their seats and payments` : "";
+  if (!confirm(`Delete "${e.event_name}"${people} permanently? This can't be undone.`)) return;
+  try {
+    await api("DELETE", `/admin/events/${e.id}`);
+    settingsDirty = false;
+    currentEvent = null;
+    await loadEvents();
+    await switchEvent(currentEvent, true);
+    showMessage($("event-msg"), `"${e.event_name}" was deleted.`, "success");
+    await loadAudit();
+  } catch (err) {
+    showMessage($("event-msg"), err.message);
+    if (err.status === 401) await checkSession();
+  }
 }
 
 /** Give every cell its column name, shown as a label when tables stack on phones. */
@@ -43,7 +153,10 @@ function labelCells(tbody) {
 }
 
 async function loadUsers() {
-  const [{ users }, seatData] = await Promise.all([api("GET", "/admin/users"), api("GET", "/seats")]);
+  const eventId = currentEvent;
+  const [{ users }, seatData] = await Promise.all([api("GET", forEvent("/admin/users")), api("GET", forEvent("/admin/seats"))]);
+  if (eventId !== currentEvent) return;   // another event was picked meanwhile
+  const readOnly = isArchived();
   window.LayoutEditor.setOccupancy(seatData.seats);
   const freeSeats = seatData.seats.filter((s) => s.status === "free").map((s) => s.id);
   const tbody = $("users");
@@ -96,13 +209,14 @@ async function loadUsers() {
             title: u.reserved_until ? `released automatically at ${formatDateTime(u.reserved_until)}` : "",
           }, u.reserved_until ? `pending until ${formatDateTime(u.reserved_until)}` : "pending");
 
+    const actions = readOnly ? [removeBtn] : [payBtn, el("span", { class: "move" }, select, moveBtn), linkBtn, removeBtn];
     tbody.append(el("tr", {},
       el("td", {}, u.name),
       el("td", {}, el("a", { href: `mailto:${u.email}` }, u.email)),
       el("td", {}, u.seat || "–"),
       el("td", {}, status),
       el("td", { class: "small" }, u.created_at + " UTC"),
-      el("td", { class: "actions-cell" }, payBtn, el("span", { class: "move" }, select, moveBtn), linkBtn, removeBtn),
+      el("td", { class: "actions-cell" }, ...actions),
     ));
   }
 
@@ -132,6 +246,7 @@ async function act(fn) {
     showMessage($("users-msg"), err.message);
     if (err.status === 401) return checkSession();
   }
+  await loadEvents();
   await loadUsers();
   await loadAudit();
 }
@@ -163,12 +278,16 @@ async function loadAudit() {
 }
 
 async function loadSettings() {
-  settingsCache = await api("GET", "/admin/settings");
-  $("event-code-hint").classList.toggle("warning", !settingsCache.event_code);
-  $("closed-banner").hidden = !!settingsCache.event_code;
+  const eventId = currentEvent;
+  const data = await api("GET", forEvent("/admin/settings"));
+  if (eventId !== currentEvent) return;   // another event was picked meanwhile
+  settingsCache = data;
+  const needsCode = !settingsCache.event_code && ["active", "upcoming"].includes(currentEventData()?.status);
+  $("event-code-hint").classList.toggle("warning", needsCode);
+  $("closed-banner").hidden = !needsCode;
   if (settingsDirty) return;          // don't overwrite edits that were not saved yet
   const f = $("settings-form");
-  for (const key of ["event_name", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
+  for (const key of ["event_name", "registration_opens", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
     f.elements[key].value = settingsCache[key];
   }
   f.elements.amount.value = (settingsCache.amount_cents / 100).toFixed(2);
@@ -184,9 +303,11 @@ async function onSaveSettings(event) {
   // meantime is silently replaced by the reloaded values
   const controls = Array.from(f.elements).filter((c) => !c.disabled);
   controls.forEach((c) => (c.disabled = true));
+  settingsSaving = true;
   try {
-    await api("PUT", "/admin/settings", payload);
+    await api("PUT", forEvent("/admin/settings"), payload);
     settingsDirty = false;
+    await loadEvents();               // the status follows the dates
     await loadSettings();
     showMessage(msg, "Settings saved.", "success");
     await loadUsers();
@@ -198,6 +319,7 @@ async function onSaveSettings(event) {
       showMessage(msg, err.message);
     }
   } finally {
+    settingsSaving = false;
     controls.forEach((c) => (c.disabled = false));
   }
 }
@@ -220,9 +342,16 @@ window.addEventListener("beforeunload", (e) => {
 });
 document.addEventListener("admin-auth-required", () => checkSession().catch(() => {}));
 document.addEventListener("layout-saved", () => loadUsers().then(loadAudit).catch(() => {}));
+// the status of an event changes with the clock (registration opens, event ends)
+setInterval(() => {
+  if (!$("admin-area").hidden) loadEvents().catch(() => {});
+}, 60000);
 
 document.addEventListener("DOMContentLoaded", () => {
   $("login-form").addEventListener("submit", onLogin);
+  $("event-select").addEventListener("change", (e) => switchEvent(Number(e.target.value)));
+  $("new-event").addEventListener("click", createEvent);
+  $("delete-event").addEventListener("click", deleteEvent);
   $("settings-form").addEventListener("submit", onSaveSettings);
   $("settings-form").addEventListener("input", () => (settingsDirty = true));
   $("logout").addEventListener("click", async () => {
