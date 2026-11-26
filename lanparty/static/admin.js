@@ -126,9 +126,15 @@ async function switchEvent(eventId, force = false) {
   renderEventStatus();
   // Load every panel even if one fails: a panel that couldn't load stays locked
   // or empty (settings form, layout save, participants) instead of keeping the
-  // previous event's data. Settings first: the participant summary needs the fee.
-  const results = [await loadSettings().then(() => ({ status: "fulfilled" }), (reason) => ({ status: "rejected", reason }))];
-  results.push(...await Promise.allSettled([window.LayoutEditor.load(currentEvent), loadUsers()]));
+  // previous event's data. The layout load starts right away, which also blocks
+  // saving the previous event's layout draft. Settings come before the
+  // participants, whose summary needs the fee.
+  const layoutLoad = window.LayoutEditor.load(eventId);
+  const results = await Promise.allSettled([layoutLoad, loadSettings()]);
+  // another event was picked meanwhile: that switch loads its own panels
+  if (eventId !== currentEvent) return;
+  results.push(...await Promise.allSettled([loadUsers()]));
+  if (eventId !== currentEvent) return;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
     showMessage($("event-msg"), `${failed.reason.message} – pick the event again to retry.`);
@@ -159,10 +165,15 @@ async function deleteEvent() {
   if (!confirm(`Delete "${e.event_name}"${people} permanently? This can't be undone.`)) return;
   try {
     await api("DELETE", `/admin/events/${e.id}`);
-    settingsDirty = false;
-    currentEvent = null;
-    await loadEvents();
-    await switchEvent(currentEvent, true);
+    if (currentEvent === e.id) {
+      settingsDirty = false;
+      currentEvent = null;
+      await loadEvents();
+      await switchEvent(currentEvent, true);
+    } else {
+      // another event was picked while deleting: keep it and its unsaved work
+      await loadEvents();
+    }
     showMessage($("event-msg"), `"${e.event_name}" was deleted.`, "success");
     await loadAudit();
   } catch (err) {
