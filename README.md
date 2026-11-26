@@ -45,7 +45,7 @@ All configuration is done with environment variables:
 | `MAX_PENDING_PER_IP`    | `4`                          | Unpaid seat reservations made from one IP at the same time. |
 | `LOGIN_CODE_MAX_PER_IP` | `20`                         | Login link attempts per IP per 15 minutes. |
 | `EVENT_CODE_MAX_PER_IP` | `10`                         | Wrong event codes per IP per 15 minutes. |
-| `LOGIN_CODE_HOURS`      | `24`                         | How long a one-time login link stays valid. |
+| `LOGIN_CODE_HOURS`      | `168`                        | How long a one-time login link stays valid (default 7 days). |
 | `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `60` / `12` | An admin session ends after this much inactivity, or after this total time at the latest. |
 
 You don't need a `SECRET_KEY`: admin sessions are stored in the database, not in signed cookies.
@@ -127,19 +127,30 @@ Limits: at most 60 groups, 60 tables per group, 1000 seats in total and 100 area
    stores only a SHA-256 hash of it.
 3. Click a free seat → confirm → the payment popup shows the amount, the PayPal address, a
    payment reference (`<event> - Seat <seat> - <name>`) and the **payment deadline**.
-4. Until an admin confirms the payment, the participant can switch seats or release their seat.
-   After the payment is confirmed, the seat is locked; only an admin can move them.
+4. Participants can **switch to another free seat themselves**, before and after paying.
+   A confirmed payment moves with them (switches of paid participants appear in the audit log).
+   Unpaid participants can also release their seat; giving up a *paid* seat means a refund, so
+   only an admin can do that.
 5. **Unpaid reservations expire.** If the payment isn't confirmed within the configured time
    (default 48 hours), the seat is released automatically. The time counts from the first
    seat pick: switching seats, or releasing and picking again within that time, doesn't extend it.
 6. **Logging in on another device:** *Create login link* gives a one-time link (`/#login=…`).
-   It works once, expires after 24 hours, and gives that device its own token. The device the link
+   It works once, stays valid for 7 days (`LOGIN_CODE_HOURS`), and gives that device its own token. The device the link
    came from stays logged in. If a browser that is already logged in as someone else opens a link,
    it asks before switching accounts. People who lost access can get a link from an admin.
 
 Seat colours: free, reserved (payment pending), paid, your seat. The public seat map shows
 the tables and groups exactly as the admin arranged them. Hovering over a seat (or clicking a taken
 one) shows who sits there. The map never shows email addresses, and it refreshes every 15 seconds.
+
+**Phones:** the pages work at phone widths. When the whole event area doesn't fit, the seat map
+shows just the part with tables and area elements and shrinks the seats (down to 26 px); if it
+still doesn't fit, it scrolls sideways and says so. On the admin page, the participant and audit
+tables turn into one card per row.
+
+**Light / dark mode:** both pages follow the browser/system setting (`prefers-color-scheme`).
+The *Auto / Light / Dark* selector in the header overrides it; the choice is remembered in that
+browser (`localStorage`).
 
 ### Admins
 On `/admin`, after logging in with `ADMIN_PASSWORD`:

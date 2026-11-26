@@ -4,7 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LAN Party – Admin</title>
+  <meta name="color-scheme" content="dark light">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js"></script>
   <script src="/static/common.js" defer></script>
   <script src="/static/layout-editor.js" defer></script>
   <script src="/static/admin.js" defer></script>
@@ -15,6 +17,13 @@
       <h1>Admin</h1>
       <div class="header-actions">
         <a href="/">← Public page</a>
+        <label class="theme-switch">
+          <select id="theme-select" aria-label="Colour theme">
+            <option value="auto">◐ Auto</option>
+            <option value="light">☀ Light</option>
+            <option value="dark">☾ Dark</option>
+          </select>
+        </label>
         <span id="session-controls" hidden>
           <span class="muted small" id="actor"></span>
           <button type="button" id="logout">Log out</button>
@@ -45,7 +54,7 @@
         <p class="muted small" id="stats"></p>
         <p id="users-msg" class="message"></p>
         <div class="table-wrap">
-          <table>
+          <table class="stack">
             <thead>
               <tr><th>Name</th><th>Email</th><th>Seat</th><th>Status</th><th>Registered</th><th>Actions</th></tr>
             </thead>
@@ -182,7 +191,7 @@
         <p class="muted small">Latest 200 entries: admin logins (including failed attempts), payments, moves,
           removals, login links, settings and layout changes, and automatically released reservations.</p>
         <div class="table-wrap">
-          <table class="audit-table">
+          <table class="audit-table stack">
             <thead><tr><th>Time</th><th>Who</th><th>Action</th><th>Details</th></tr></thead>
             <tbody id="audit"></tbody>
           </table>

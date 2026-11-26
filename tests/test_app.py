@@ -149,12 +149,49 @@ def test_user_can_change_and_release_seat(client):
     assert res.status_code == 200 and res.get_json()["user"]["seat"] is None
 
 
-def test_paid_user_cannot_change_seat(client, admin):
+def test_paid_user_can_switch_but_not_release_seat(client, admin):
     headers, user = register(client)
     client.post("/api/me/seat", json={"seat": "A1"}, headers=headers)
     admin.post(f"/api/admin/users/{user['id']}/paid", json={"paid": True})
-    assert client.post("/api/me/seat", json={"seat": "A2"}, headers=headers).status_code == 409
-    assert client.delete("/api/me/seat", headers=headers).status_code == 409
+    paid_at = admin.get("/api/admin/users").get_json()["users"][0]["paid_at"]
+
+    res = client.post("/api/me/seat", json={"seat": "A2"}, headers=headers)
+    assert res.status_code == 200
+    me = res.get_json()["user"]
+    assert me["seat"] == "A2" and me["paid"] is True and me["reserved_until"] is None
+    seats = {s["id"]: s["status"] for s in client.get("/api/seats").get_json()["seats"]}
+    assert seats["A1"] == "free" and seats["A2"] == "paid"
+    stored = admin.get("/api/admin/users").get_json()["users"][0]
+    assert stored["paid_at"] == paid_at and stored["paid_amount_cents"] == 2000
+
+    entry = admin.get("/api/admin/audit").get_json()["entries"][0]
+    assert entry["action"] == "user.seat_switched"
+    assert entry["details"]["seat"] == "A1" and entry["details"]["to"] == "A2"
+
+    # giving the seat up (refund) still needs an admin
+    res = client.delete("/api/me/seat", headers=headers)
+    assert res.status_code == 409 and "admin" in res.get_json()["error"]
+
+
+def test_paid_user_cannot_take_an_occupied_seat(client, admin):
+    h1, u1 = register(client, name="Paid", email="paid@example.com")
+    h2, _ = register(client, name="Other", email="other@example.com")
+    client.post("/api/me/seat", json={"seat": "A1"}, headers=h1)
+    client.post("/api/me/seat", json={"seat": "A2"}, headers=h2)
+    admin.post(f"/api/admin/users/{u1['id']}/paid", json={"paid": True})
+    assert client.post("/api/me/seat", json={"seat": "A2"}, headers=h1).status_code == 409
+
+
+def test_paid_switch_does_not_count_as_pending_reservation(app, client, admin):
+    app.config["MAX_PENDING_PER_IP"] = 1
+    h1, u1 = register(client, name="Paid", email="paid@example.com")
+    client.post("/api/me/seat", json={"seat": "A1"}, headers=h1)
+    admin.post(f"/api/admin/users/{u1['id']}/paid", json={"paid": True})
+    admin.post(f"/api/admin/users/{u1['id']}/move", json={"seat": None})   # paid, no seat
+    h2, _ = register(client, name="Pending", email="pending@example.com")
+    assert client.post("/api/me/seat", json={"seat": "B1"}, headers=h2).status_code == 200
+    # the paid person picking a seat again is not blocked by the per-IP pending limit
+    assert client.post("/api/me/seat", json={"seat": "A3"}, headers=h1).status_code == 200
 
 
 # --- admin auth ----------------------------------------------------------

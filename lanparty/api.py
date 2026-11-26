@@ -248,20 +248,26 @@ def get_user(user_id: int):
     return row
 
 
-PAID_LOCKED = "Your payment is already confirmed. Ask an admin to change your seat."
+PAID_NO_RELEASE = ("Your payment is already confirmed, so the seat can't be given up here. "
+                   "You can switch to another free seat, or ask an admin to cancel.")
 
 
-def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> None:
-    """Assign (or clear, if seat_value is None) a seat for a user.
+def assign_seat(user_id: int, seat_value, *, by_participant: bool = False, admin: str | None = None):
+    """Assign (or clear, if seat_value is None) a seat for a user; returns the updated row.
 
     Runs as one write transaction: the paid state, the layout, the per-IP
     pending limit and the seat itself are all read and changed under the same
     lock, so concurrent payment confirmations, layout saves or reservations
-    cannot interleave. ``by_participant`` applies the participant rules (paid
-    seats are locked, new reservations count against the per-IP limit).
+    cannot interleave. ``by_participant`` applies the participant rules (a paid
+    seat can be switched but not released, new unpaid reservations count against
+    the per-IP limit).
 
     The unpaid reservation window starts with the first seat pick and is *not*
     reset by switching seats or by releasing and re-picking within the window.
+
+    The audit entry (``user.moved`` by ``admin``, or ``user.seat_switched`` when a
+    paid participant switches) is written in the same transaction, so it records
+    exactly the seats this call changed, even when other requests run concurrently.
     """
     ip_key = sec.ip_hash() if by_participant else None  # may write; keep outside the transaction
     hours = settings()["reservation_hours"]
@@ -270,15 +276,17 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> No
         user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             raise ApiError(404, "User not found.")
-        if by_participant and user["paid"]:
-            raise ApiError(409, PAID_LOCKED)
+        if by_participant and user["paid"] and seat_value is None:
+            # giving up a paid seat means a refund: that stays with the admins
+            raise ApiError(409, PAID_NO_RELEASE)
         if seat_value is None:
             db.execute("UPDATE users SET seat = NULL, seat_selected_at = NULL WHERE id = ?", (user_id,))
-            return
+            return _audit_seat_change(db, user, by_participant, admin)
         seat = lay.normalize_seat(seat_value)
         if seat is None or seat not in set(lay.seat_ids(lay.load())):
             raise ApiError(400, "This seat does not exist.")
-        if by_participant and user["seat"] is None:  # new reservation (switching does not count)
+        if by_participant and user["seat"] is None and not user["paid"]:
+            # new unpaid reservation (switching seats does not count)
             pending = db.execute(
                 "SELECT COUNT(*) FROM users WHERE paid = 0 AND seat IS NOT NULL AND reserved_ip_hash = ?",
                 (ip_key,),
@@ -299,6 +307,20 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False) -> No
             )
         except sqlite3.IntegrityError:
             raise ApiError(409, f"Seat {seat} is already taken.") from None
+        return _audit_seat_change(db, user, by_participant, admin)
+
+
+def _audit_seat_change(db, before, by_participant: bool, admin: str | None):
+    """Audit a seat change inside assign_seat's transaction; returns the updated row."""
+    after = db.execute("SELECT * FROM users WHERE id = ?", (before["id"],)).fetchone()
+    if after["seat"] != before["seat"]:
+        if admin is not None:
+            sec.record_audit(admin, "user.moved", **user_summary(before), to=after["seat"])
+        elif by_participant and before["paid"]:
+            # the payment moves with the person; admins see it in the audit log
+            sec.record_audit(f"participant:{before['id']}", "user.seat_switched",
+                             **user_summary(before), to=after["seat"])
+    return after
 
 
 @bp.get("/info")
@@ -307,6 +329,7 @@ def info():
     data.pop("event_code")
     data["registration_open"] = registration_open()
     data["seat_count"] = len(lay.seat_ids(lay.load()))
+    data["login_link_hours"] = conf("LOGIN_CODE_HOURS")
     return jsonify(data)
 
 
@@ -401,9 +424,8 @@ def choose_seat():
     seat = json_body().get("seat")
     if seat is None:
         raise ApiError(400, "This seat does not exist.")
-    assign_seat(user["id"], seat, by_participant=True)
-    user = get_user(user["id"])
-    return jsonify(user=user_dict(user), payment=payment_info(user))
+    updated = assign_seat(user["id"], seat, by_participant=True)
+    return jsonify(user=user_dict(updated), payment=payment_info(updated))
 
 
 @bp.delete("/me/seat")
@@ -602,14 +624,10 @@ def admin_set_paid(user_id):
 @bp.post("/admin/users/<int:user_id>/move")
 @admin_required
 def admin_move(user_id):
-    user = get_user(user_id)
     data = json_body()
     if "seat" not in data:
         raise ApiError(400, "'seat' is required (use null to free the seat).")
-    assign_seat(user_id, data["seat"])
-    updated = get_user(user_id)
-    if updated["seat"] != user["seat"]:
-        sec.audit(actor(), "user.moved", **user_summary(user), to=updated["seat"])
+    updated = assign_seat(user_id, data["seat"], admin=actor())
     return jsonify(user=user_dict(updated))
 
 

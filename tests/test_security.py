@@ -282,10 +282,24 @@ def test_login_link_flow(app, client):
     assert client.post("/api/login/preview", json={"code": link["code"]}).status_code == 400
 
 
+def test_login_link_is_valid_for_a_week(app, client):
+    import time
+    headers, _ = register(client, 1)
+    before = time.time()
+    link = client.post("/api/me/login-link", headers=headers).get_json()
+    from datetime import datetime
+    valid_for = datetime.fromisoformat(link["expires_at"]).timestamp() - before
+    assert 7 * 24 * 3600 - 60 <= valid_for <= 7 * 24 * 3600 + 60
+    assert client.get("/api/info").get_json()["login_link_hours"] == 7 * 24
+    # still usable after six days
+    sql(app, "UPDATE login_codes SET expires_at = expires_at - 6 * 24 * 3600")
+    assert client.post("/api/login/preview", json={"code": link["code"]}).status_code == 200
+
+
 def test_login_link_expires(app, client):
     headers, _ = register(client, 1)
     code = client.post("/api/me/login-link", headers=headers).get_json()["code"]
-    sql(app, "UPDATE login_codes SET expires_at = expires_at - 25 * 3600")
+    sql(app, "UPDATE login_codes SET expires_at = expires_at - 7 * 24 * 3600 - 60")
     assert client.post("/api/login", json={"code": code}).status_code == 400
 
 

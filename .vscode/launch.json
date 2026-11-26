@@ -29,6 +29,34 @@
             "justMyCode": true
         },
         {
+            // Lauscht auf allen Interfaces, damit z. B. das Handy im selben WLAN zugreifen kann.
+            // Flask gibt beim Start die LAN-Adresse aus ("Running on http://192.168.x.y:5000").
+            // Jeder im Netz erreicht den Server. Deshalb: eigene Wegwerf-Datenbank (nicht dev.sqlite3
+            // mit echten Daten) und ein Admin-Passwort (mind. 12 Zeichen), das beim Start abgefragt
+            // und nirgends gespeichert wird.
+            "name": "LAN Party: Server im lokalen Netz (0.0.0.0:5000, Handy-Test)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "flask",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "--app", "lanparty:create_app",
+                "run",
+                "--host", "0.0.0.0",
+                "--port", "5000",
+                "--no-debugger"
+            ],
+            "env": {
+                "FLASK_DEBUG": "1",
+                "ADMIN_PASSWORD": "${input:lanAdminPassword}",
+                "DATABASE": "${workspaceFolder}/instance/lan-test.sqlite3"
+            },
+            "console": "integratedTerminal",
+            "jinja": true,
+            "justMyCode": true
+        },
+        {
             "name": "LAN Party: Tests (pytest)",
             "type": "debugpy",
             "request": "launch",
@@ -38,6 +66,14 @@
             "args": ["-v"],
             "console": "integratedTerminal",
             "justMyCode": false
+        }
+    ],
+    "inputs": [
+        {
+            "id": "lanAdminPassword",
+            "type": "promptString",
+            "description": "Admin-Passwort für den LAN-Testserver (mind. 12 Zeichen)",
+            "password": true
         }
     ]
 }

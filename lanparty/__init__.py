@@ -49,7 +49,7 @@ def create_app(config: dict | None = None) -> Flask:
         # sessions / login links
         ADMIN_SESSION_IDLE_MINUTES=_env_int("ADMIN_SESSION_IDLE_MINUTES", 60),
         ADMIN_SESSION_MAX_HOURS=_env_int("ADMIN_SESSION_MAX_HOURS", 12),
-        LOGIN_CODE_HOURS=_env_int("LOGIN_CODE_HOURS", 24),
+        LOGIN_CODE_HOURS=_env_int("LOGIN_CODE_HOURS", 7 * 24),
     )
     if config:
         app.config.update(config)
