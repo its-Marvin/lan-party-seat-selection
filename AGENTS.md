@@ -84,6 +84,12 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Archived events: participants and layout are read-only (409); settings stay editable so a wrong
   end date can be fixed; removing people is allowed (data deletion).
 - Admin endpoints take `?event=<id>` (`admin_event_id()`); the admin UI always sends it.
+- Admin UI: the settings form and the layout draft are bound to the event they were loaded from
+  (`settingsEventId`, `LayoutEditor.eventId()`), and saves go there, never to `currentEvent`.
+  While another event loads, the form and layout saving are locked; a failed load keeps them
+  locked. An event deleted elsewhere triggers a normal (unsaved-work-aware) switch, once.
+- Background polls send `X-Background: 1` (`api(…, {background: true})`); `admin_required` then
+  doesn't refresh the session, so the idle timeout still works with an open tab.
 - Migration: an old single-event DB becomes event 1 with `registration_opens` = migration time.
   The `users` table is rebuilt (with `PRAGMA foreign_keys = OFF` around the transaction).
 

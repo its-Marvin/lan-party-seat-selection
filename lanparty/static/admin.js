@@ -8,6 +8,11 @@ let currentEvent = null;
 let eventsCache = [];
 let eventsRendered = null;
 let settingsSaving = false;
+// Event whose values are in the settings form (the save target); null while
+// another event's values are being loaded, and the form is locked meanwhile.
+let settingsEventId = null;
+// Event that was deleted elsewhere while selected here (asked about only once).
+let goneEvent = null;
 
 const forEvent = (path) => `${path}${path.includes("?") ? "&" : "?"}event=${encodeURIComponent(currentEvent)}`;
 const currentEventData = () => eventsCache.find((e) => e.id === currentEvent) || null;
@@ -48,10 +53,11 @@ async function checkSession() {
 }
 
 /** Load the event list; keeps the selected event if it still exists. */
-async function loadEvents() {
-  const data = await api("GET", "/admin/events");
+async function loadEvents({ background = false } = {}) {
+  const data = await api("GET", "/admin/events", undefined, { background });
   eventsCache = data.events;
-  if (!eventsCache.some((e) => e.id === currentEvent)) currentEvent = data.default_id;
+  const gone = currentEvent !== null && !eventsCache.some((e) => e.id === currentEvent);
+  if (currentEvent === null) currentEvent = data.default_id;
   $("event-timezone").textContent = data.timezone ? `Dates and times are in ${data.timezone}.` : "";
   // rebuilding the options would close the dropdown if it is open: only on change
   const fingerprint = JSON.stringify([currentEvent, eventsCache.map((e) => [e.id, e.event_name, e.status, e.event_start])]);
@@ -62,6 +68,18 @@ async function loadEvents() {
     }, `${e.event_name} – ${STATUS_LABELS[e.status]}${e.event_start ? ` (${formatDateTime(e.event_start)})` : ""}`)));
   }
   renderEventStatus();
+  if (gone && goneEvent !== currentEvent) {
+    // Deleted by someone else: switch like a manual pick (asks about unsaved
+    // work). If the admin keeps the draft, saving it fails instead of silently
+    // writing it to another event, because saves target the draft's own event.
+    goneEvent = currentEvent;
+    await switchEvent(data.default_id);
+    showMessage($("event-msg"), "The event you were editing was deleted, probably by another admin.");
+  }
+}
+
+function setSettingsLocked(locked) {
+  for (const control of $("settings-form").elements) control.disabled = locked;
 }
 
 function renderEventStatus() {
@@ -96,16 +114,19 @@ async function switchEvent(eventId, force = false) {
   }
   currentEvent = eventId;
   settingsDirty = false;
+  // until this event's values are in the form, nothing can be typed or saved
+  settingsEventId = null;
+  setSettingsLocked(true);
   showMessage($("event-msg"), "");
   for (const id of ["settings-msg", "layout-msg", "users-msg"]) showMessage($(id), "");
-  try {
-    renderEventStatus();
-    await loadSettings();
-    await window.LayoutEditor.load(currentEvent);
-    await loadUsers();
-  } catch (err) {
-    showMessage($("event-msg"), err.message);
-    if (err.status === 401) await checkSession();
+  renderEventStatus();
+  // Load every panel even if one fails: a panel that couldn't load stays locked
+  // (settings form, layout save) instead of keeping the previous event's data.
+  const results = await Promise.allSettled([loadSettings(), window.LayoutEditor.load(currentEvent), loadUsers()]);
+  const failed = results.find((r) => r.status === "rejected");
+  if (failed) {
+    showMessage($("event-msg"), `${failed.reason.message} – pick the event again to retry.`);
+    if (failed.reason.status === 401) await checkSession();
   }
 }
 
@@ -157,7 +178,7 @@ async function loadUsers() {
   const [{ users }, seatData] = await Promise.all([api("GET", forEvent("/admin/users")), api("GET", forEvent("/admin/seats"))]);
   if (eventId !== currentEvent) return;   // another event was picked meanwhile
   const readOnly = isArchived();
-  window.LayoutEditor.setOccupancy(seatData.seats);
+  window.LayoutEditor.setOccupancy(seatData.seats, true, eventId);
   const freeSeats = seatData.seats.filter((s) => s.status === "free").map((s) => s.id);
   const tbody = $("users");
   tbody.replaceChildren();
@@ -282,15 +303,23 @@ async function loadSettings() {
   const data = await api("GET", forEvent("/admin/settings"));
   if (eventId !== currentEvent) return;   // another event was picked meanwhile
   settingsCache = data;
-  const needsCode = !settingsCache.event_code && ["active", "upcoming"].includes(currentEventData()?.status);
-  $("event-code-hint").classList.toggle("warning", needsCode);
-  $("closed-banner").hidden = !needsCode;
-  if (settingsDirty) return;          // don't overwrite edits that were not saved yet
+  renderSettingsWarnings();
+  // keep edits that weren't saved yet, as long as they belong to this event
+  if (settingsDirty && settingsEventId === eventId) return;
   const f = $("settings-form");
   for (const key of ["event_name", "registration_opens", "event_start", "event_end", "location", "description", "paypal_address", "reservation_hours", "event_code"]) {
     f.elements[key].value = settingsCache[key];
   }
   f.elements.amount.value = (settingsCache.amount_cents / 100).toFixed(2);
+  settingsDirty = false;
+  settingsEventId = eventId;
+  if (!settingsSaving) setSettingsLocked(false);
+}
+
+function renderSettingsWarnings() {
+  const needsCode = !settingsCache.event_code && ["active", "upcoming"].includes(currentEventData()?.status);
+  $("event-code-hint").classList.toggle("warning", needsCode);
+  $("closed-banner").hidden = !needsCode;
 }
 
 async function onSaveSettings(event) {
@@ -299,13 +328,19 @@ async function onSaveSettings(event) {
   const msg = $("settings-msg");
   showMessage(msg, "");
   const payload = Object.fromEntries(new FormData(f).entries());
+  // save to the event the form values belong to, never to one picked meanwhile
+  const target = settingsEventId;
+  if (target === null || target !== currentEvent) {
+    showMessage(msg, "These settings belong to another event. Pick that event again or reload the page.");
+    return;
+  }
   // lock the form until the save and reload are done, so no edit made in the
   // meantime is silently replaced by the reloaded values
   const controls = Array.from(f.elements).filter((c) => !c.disabled);
   controls.forEach((c) => (c.disabled = true));
   settingsSaving = true;
   try {
-    await api("PUT", forEvent("/admin/settings"), payload);
+    await api("PUT", `/admin/settings?event=${encodeURIComponent(target)}`, payload);
     settingsDirty = false;
     await loadEvents();               // the status follows the dates
     await loadSettings();
@@ -344,10 +379,11 @@ document.addEventListener("admin-auth-required", () => checkSession().catch(() =
 document.addEventListener("layout-saved", () => loadUsers().then(loadAudit).catch(() => {}));
 // the status of an event changes with the clock (registration opens, event ends)
 setInterval(() => {
-  if (!$("admin-area").hidden) loadEvents().catch(() => {});
+  if (!$("admin-area").hidden) loadEvents({ background: true }).catch(() => {});
 }, 60000);
 
 document.addEventListener("DOMContentLoaded", () => {
+  setSettingsLocked(true);   // unlocked once an event's values are in the form
   $("login-form").addEventListener("submit", onLogin);
   $("event-select").addEventListener("change", (e) => switchEvent(Number(e.target.value)));
   $("new-event").addEventListener("click", createEvent);
