@@ -92,6 +92,7 @@ theme overrides the ones it wants. Tokens it leaves out keep the standard value 
 | `--text` | Normal text, seat labels |
 | `--muted` | Secondary text, labels |
 | `--accent` / `--on-accent` | Links, primary buttons, focus rings / text on them |
+| `--accent-hover` | Primary buttons under the mouse (text: `--on-accent`) |
 | `--free` / `--free-hover` | Free seats (text: `--text`) |
 | `--reserved` / `--on-reserved` | Reserved seats and badges / their text |
 | `--paid` / `--on-paid` | Paid seats and badges / their text |

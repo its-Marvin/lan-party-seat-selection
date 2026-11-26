@@ -15,6 +15,7 @@
   --muted: #26c454;
   --accent: #66ff99;
   --on-accent: #021a08;
+  --accent-hover: #8dffb0;
   --free: #0f2614;
   --free-hover: #174d22;
   --reserved: #ffb000;
@@ -54,6 +55,7 @@
   --muted: #2f5e3a;
   --accent: #0a7a2f;
   --on-accent: #ffffff;
+  --accent-hover: #086326;
   --free: #f8fff5;
   --free-hover: #d4f0d0;
   --reserved: #e0a000;
