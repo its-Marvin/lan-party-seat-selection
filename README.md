@@ -245,8 +245,9 @@ On `/admin`, after logging in with `ADMIN_PASSWORD`:
 - Settings form for the event, the payment and the reservation hold time.
 - **Audit log:** shows admin logins (including failed attempts with their IP), payment
   confirmations, moves, removals, login links, settings changes (the PayPal address and amount
-  are highlighted) and automatically released reservations. Admins enter their name when they
-  log in, so the log shows who did what even though everyone shares one password.
+  are highlighted) and automatically released reservations. Admins must enter their name when they
+  log in (a login without one is refused), so the log shows who did what even though everyone
+  shares one password.
 - **Log out everywhere** ends all admin sessions, e.g. after a laptop was lost.
 
 ## API
@@ -265,7 +266,7 @@ All endpoints are under `/api` and use JSON.
 | POST   | `/me/login-link` | token | → `{code, expires_at}`: a one-time login code |
 | POST   | `/login/preview` | – | `{code}` → `{user_id, name}`; doesn't use up the code |
 | POST   | `/login` | – | `{code}` → `{token, user}`; uses up the code |
-| POST   | `/admin/login` | – | `{password, name?}` (rate-limited) |
+| POST   | `/admin/login` | – | `{password, name}` (rate-limited; `name` is required, 400 without it) |
 | POST   | `/admin/logout` | – | |
 | POST   | `/admin/logout-all` | admin | End every admin session |
 | GET    | `/admin/session` | – | `{admin: bool, actor}` |

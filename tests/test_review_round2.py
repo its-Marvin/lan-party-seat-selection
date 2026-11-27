@@ -16,7 +16,7 @@ from tests.test_review_fixes import ADMIN_PW, admin, app, make_app, register, ru
 
 
 def login(client):
-    assert client.post("/api/admin/login", json={"password": ADMIN_PW}).status_code == 200
+    assert client.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW}).status_code == 200
     return client
 
 

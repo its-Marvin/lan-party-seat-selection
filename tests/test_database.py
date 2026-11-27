@@ -187,7 +187,7 @@ def test_deeply_nested_input_is_a_validation_error_not_a_crash(coded_app, inner)
 
 def test_admin_input_rejects_nested_nul_characters(coded_app):
     admin = coded_app.test_client()
-    assert admin.post("/api/admin/login", json={"password": "admin-password-123"}).status_code == 200
+    assert admin.post("/api/admin/login", json={"name": "Test Admin", "password": "admin-password-123"}).status_code == 200
     assert admin.put("/api/admin/settings", json={"event_name": "LAN\x00"}).status_code == 400
     layout = admin.get("/api/admin/layout").get_json()
     layout["groups"][0]["label"] = "\x00"

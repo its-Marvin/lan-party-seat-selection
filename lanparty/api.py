@@ -651,8 +651,9 @@ def event_summary(e: dict) -> dict:
 
 
 def clean_actor_name(value) -> str:
+    """The admin's name for the audit log, without control characters ("" if none is left)."""
     text = "".join(ch for ch in str(value or "") if unicodedata.category(ch)[0] != "C").strip()
-    return text[:40] or "admin"
+    return text[:40].strip()
 
 
 @bp.post("/admin/login")
@@ -661,6 +662,11 @@ def admin_login():
     if not expected:
         raise ApiError(503, tr("Admin login is disabled: ADMIN_PASSWORD is not set."))
     data = json_body()
+    # every audit entry must say which admin did it; checked before the rate limit,
+    # so a forgotten name costs no login attempt (and says nothing about the password)
+    name = clean_actor_name(data.get("name"))
+    if not name:
+        raise ApiError(400, tr("Please enter your name. It shows in the audit log."))
     ip = sec.client_ip()
     key = sec.ip_hash(ip)
     window = conf("ADMIN_LOGIN_WINDOW_MINUTES") * 60
@@ -675,7 +681,6 @@ def admin_login():
     if wait:
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
-    name = clean_actor_name(data.get("name"))
     password = str(data.get("password") or "")
     if not hmac.compare_digest(password.encode(), expected.encode()):
         sec.audit("anonymous", "admin.login_failed", ip=ip, name=name)

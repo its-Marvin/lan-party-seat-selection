@@ -47,7 +47,8 @@ async function checkSession() {
     showMessage($("login-msg"), unsaved.length
       ? t("admin.unsavedKept", { what: describeUnsaved(unsaved) })
       : "", "info");
-    if (unsaved.length) $("login-form").password.focus();
+    const form = $("login-form");
+    if (unsaved.length) (form.name.value.trim() ? form.password : form.name).focus();
     return;
   }
   showMessage($("login-msg"), "");
@@ -434,7 +435,7 @@ async function onLogin(event) {
   showMessage(msg, "");
   try {
     await api("POST", "/admin/login", { password: event.target.password.value, name: event.target.name.value });
-    event.target.reset();
+    event.target.password.value = "";   // the name stays for the next login
     await checkSession();
   } catch (err) {
     showMessage(msg, err.message);

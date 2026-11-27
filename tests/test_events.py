@@ -26,7 +26,7 @@ def app(tmp_path):
 @pytest.fixture
 def admin(app):
     c = app.test_client()
-    assert c.post("/api/admin/login", json={"password": ADMIN_PW}).status_code == 200
+    assert c.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW}).status_code == 200
     return c
 
 

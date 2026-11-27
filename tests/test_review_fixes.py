@@ -27,7 +27,7 @@ def app(tmp_path):
 @pytest.fixture
 def admin(app):
     c = app.test_client()
-    assert c.post("/api/admin/login", json={"password": ADMIN_PW}).status_code == 200
+    assert c.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW}).status_code == 200
     return c
 
 
@@ -196,7 +196,7 @@ def test_parallel_code_guesses_respect_limit(app):
 
 def test_parallel_admin_guesses_respect_limit(app):
     def attempt(i):
-        return app.test_client().post("/api/admin/login", json={"password": f"guess-{i}"}, **ip("10.5.5.5")).status_code
+        return app.test_client().post("/api/admin/login", json={"name": "Test Admin", "password": f"guess-{i}"}, **ip("10.5.5.5")).status_code
 
     codes = run_parallel(25, attempt)
     assert codes.count(401) == 5 and codes.count(429) == 20

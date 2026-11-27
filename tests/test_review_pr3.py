@@ -76,7 +76,7 @@ def legacy_db(path, settings):
 def boot(path):
     app = create_app({"TESTING": True, "DATABASE": str(path), "ADMIN_PASSWORD": ADMIN_PW})
     client = app.test_client()
-    client.post("/api/admin/login", json={"password": ADMIN_PW})
+    client.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW})
     return app, client
 
 

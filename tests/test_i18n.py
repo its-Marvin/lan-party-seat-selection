@@ -66,7 +66,7 @@ def test_api_errors_follow_the_requested_language(app):
 
 def test_formatted_messages_are_translated(app):
     admin = app.test_client()
-    admin.post("/api/admin/login", json={"password": ADMIN_PW})
+    admin.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW})
     layout = admin.get("/api/admin/layout").get_json()
     layout["groups"][1]["y"] = layout["groups"][0]["y"]
     res = admin.put("/api/admin/layout", json=layout, headers={"X-Lang": "de-DE"})

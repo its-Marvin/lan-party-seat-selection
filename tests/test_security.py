@@ -35,7 +35,7 @@ def ip(addr):
 
 
 def login(client, password=ADMIN_PW, name="Alice Admin", addr="10.0.0.1"):
-    return client.post("/api/admin/login", json={"password": password, "name": name}, **ip(addr))
+    return client.post("/api/admin/login", json={"name": "Test Admin", "password": password, "name": name}, **ip(addr))
 
 
 def register(client, n, addr="10.1.0.1"):
@@ -426,6 +426,27 @@ def test_actor_name_is_sanitised(app, client):
     assert login(client, name="Bob‮\x07" + "x" * 100).get_json()["actor"] == "Bob" + "x" * 37
     # NUL is refused outright (PostgreSQL can't store it), like in every JSON body
     assert login(client, name="Bob\x00").status_code == 400
+
+
+@pytest.mark.parametrize("name", [None, "", "   ", "‮\x07"])
+def test_admin_login_requires_a_name(app, client, name):
+    """Every audit entry names the admin: no anonymous "admin" fallback any more."""
+    body = {"password": ADMIN_PW} if name is None else {"password": ADMIN_PW, "name": name}
+    resp = client.post("/api/admin/login", json=body, **ip("10.0.0.1"))
+    assert resp.status_code == 400 and "name" in resp.get_json()["error"]
+    assert client.get("/api/admin/session").get_json()["admin"] is False
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM admin_sessions").fetchone()[0] == 0
+
+
+def test_missing_name_costs_no_login_attempt_and_reveals_nothing(tmp_path):
+    app = make_app(tmp_path, ADMIN_LOGIN_MAX_PER_IP=2)
+    client = app.test_client()
+    for password in ("wrong", ADMIN_PW, "wrong", ADMIN_PW):
+        # same answer for right and wrong passwords, and the limit isn't touched
+        assert login(client, password=password, name="").status_code == 400
+    assert login(client).status_code == 200
+    assert "admin.login_failed" not in [e["action"] for e in sql_entries(app)]
 
 
 # --- migration of databases from older versions ------------------------------

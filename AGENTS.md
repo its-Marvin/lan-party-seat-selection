@@ -153,6 +153,8 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   hidden. With a code (`[A-Z0-9]{4,6}`, normalised to uppercase), names show only to code
   holders (`X-Event-Code` header), participants and admins. Wrong codes are rate-limited on
   every endpoint. `/api/info` never contains the code.
+- Admins must give a name at login (400 otherwise, checked before the rate limit so it costs no
+  attempt); it is the `actor` in the audit log. There is no `"admin"` fallback.
 - Admin auth uses a server-side session (`lp_admin` cookie: HttpOnly, SameSite=Strict,
   Path=/api) with 60 min idle and 12 h max. Changing `ADMIN_PASSWORD` invalidates all sessions.
   Passwords under 12 characters are refused unless `ALLOW_WEAK_ADMIN_PASSWORD=1` or TESTING.
