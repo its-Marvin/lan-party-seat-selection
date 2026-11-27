@@ -1,24 +1,68 @@
 # LAN Party Seat Selection
 
-A small web app for LAN party seat registration.
+Seat registration for your LAN party. Participants sign up, pick their seat on a map of your
+venue and see straight away what to pay and where. You confirm the payments and keep everything
+in one place, instead of in a group chat, a spreadsheet and a PayPal inbox.
 
-- **Participants** sign up with their name and email, then pick a seat on the seat map.
-  Once they pick a seat, a popup tells them how much to pay and which PayPal address to send it to.
-- **Admins** confirm payments, move people to other seats, and remove people. They also
-  set the PayPal address, the amount due and the event details, and they arrange the
-  **seat layout**: groups of two-person tables that they drag into place on a plan of the event area,
-  together with doors, windows, the sleeping area and food & drinks.
-- The public page shows the event's name, date, location, fee and description.
-- **English and German:** both pages, including error messages, follow the browser language
-  and can be switched in the header. See [Languages](#languages).
-- **Themes:** each event can have its own look (a retro green terminal theme is included), and
-  you can add your own theme folders. See [THEMES.md](THEMES.md).
-- **Several events:** admins prepare future events in advance. Each one opens automatically on
-  its "registration opens" date and is archived when it ends. Only one event is open at a time.
+![The public page: event details, your registration and the seat map](docs/screenshots/public-page.png)
+
+## What it does
+
+**For participants**
+
+- Sign up with a name and email, then click a free seat on a map that shows the real venue:
+  tables, doors, windows, the sleeping area and food & drinks.
+- After picking a seat, a popup shows the fee, the PayPal address, a payment reference and the
+  payment deadline.
+- See who sits where (with the event code), switch seats later (a payment moves along), and
+  log in on other devices with a one-time link. No passwords to remember.
+- Works on phones, in light and dark mode, in English and German (see [Languages](#languages)).
+
+<p>
+  <img src="docs/screenshots/payment-dialog.png" alt="Payment popup after picking a seat" width="62%">
+  <img src="docs/screenshots/phone.png" alt="The seat map on a phone" width="30%">
+</p>
+
+**For organizers**
+
+- **Participants and payments:** confirm payments, move people to other seats, remove them, or
+  send someone a login link. The summary shows how many seats are taken and paid, and how much
+  money came in and is still outstanding.
+- **Unpaid reservations expire** after a set time (48 hours by default), so nobody blocks a seat
+  without paying.
+- **Seat layout editor:** drag groups of two-person tables and area elements into place on a grid.
+  Seats are numbered automatically (A1, A2, …), and people keep their seats when you rearrange.
+- **Several events:** prepare the next LAN in advance. Each event opens on its registration date
+  and is archived when it ends.
+- **Themes:** give each event its own look; a retro terminal theme is included, and you can add
+  your own (see [THEMES.md](THEMES.md)).
+- **Audit log:** every admin action is recorded with the admin's name, so a changed PayPal
+  address or a confirmed payment can always be traced.
+
+![Participants table in the admin area, with payment summary](docs/screenshots/admin-participants.png)
+
+![The drag-and-drop seat layout editor](docs/screenshots/layout-editor.png)
+
+![The public seat map in the included retro theme](docs/screenshots/retro-theme.png)
+
+## Why use it
+
+- **Made for LAN parties:** two-person tables, seat groups, a fee paid via PayPal, and the
+  question everyone asks ("who sits next to me?") are built in, not bolted onto a generic
+  booking tool.
+- **Private by default:** registration stays closed and names stay hidden until you set an
+  **event code**, which you share only with your guests. Email addresses are only shown to admins (and each participant sees their own).
+- **Secure:** rate limits on every guessable code, server-side admin sessions, a strict
+  content security policy and an audit log; reviewed against the OWASP Top 10
+  (see [Security](#security)).
+- **Easy to run:** one `docker compose up -d` with PostgreSQL, or just Python and SQLite on a
+  laptop. No build step, no JavaScript framework, no external services: your participants' data
+  stays on your server.
+- **Free and open source** (see [License](#license)).
 
 Stack: Python 3.11+ with Flask, SQLite (Python's built-in `sqlite3`) or PostgreSQL, and plain
 HTML/CSS/JS with no build step. A Docker Compose setup with PostgreSQL is included
-(see [Docker](#docker)).
+(see [Docker](#docker)). The screenshots show a fictional demo event.
 
 ## Quick start
 

@@ -11,3 +11,4 @@ tests
 *.sqlite3
 .env
 .env.*
+docs

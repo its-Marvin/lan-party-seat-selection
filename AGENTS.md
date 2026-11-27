@@ -234,6 +234,10 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   session scratchpad, with Chromium cached at `~/.cache/ms-playwright/chromium-1228/`; recreate
   it if it is gone. Test at 1280, 375 and 320 px, in both themes.
 - Keep the README up to date with behaviour and config changes.
+- README screenshots live in `docs/screenshots/` and show a **fictional** demo event ("Winter LAN
+  2027", made-up names, `@example.com`), built in a temp DB via the API and captured with
+  Playwright at 1280 px (phone: 375 px, scale 2). Never take them from `instance/dev.sqlite3`.
+  Retake them when the UI they show changes visibly.
 
 ## Current state (2026-11-27)
 
