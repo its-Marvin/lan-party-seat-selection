@@ -368,17 +368,23 @@ one-time login links, input hardening, the audit log, and migration of databases
 
 ## Docker
 
-`docker-compose.yml` runs the app (gunicorn, 4 workers) together with PostgreSQL 17:
+`docker-compose.yml` runs the app (gunicorn, 4 workers) together with PostgreSQL 17. You only
+need the compose file and `.env.example`, not the code: the image is pulled from
+`ghcr.io/its-marvin/lan-party-seat-selection` (amd64 and arm64).
 
 ```bash
 cp .env.example .env      # set ADMIN_PASSWORD and POSTGRES_PASSWORD, check TIMEZONE
-docker compose up -d --build
+docker compose up -d
 ```
+
+To build the image from a checkout instead, add the build override:
+`docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
 
 The app is then at <http://127.0.0.1:8000>. Settings in `.env`:
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `LANPARTY_VERSION` | `latest` | Image tag: `latest` (the `main` branch), a release such as `1.2.3` or `1.2`, or `sha-<commit>`. |
 | `ADMIN_PASSWORD` | *(required)* | Admin password, at least 12 characters. |
 | `POSTGRES_PASSWORD` | *(required)* | Password of the database user. The database is only reachable inside the compose network; its port is not published. |
 | `TIMEZONE` | `UTC` | Time zone of the event dates. Containers run in UTC, so set this (e.g. `Europe/Berlin`). |
@@ -394,8 +400,17 @@ Other variables from [Configuration](#configuration) can be added to the `app` s
   `docker compose exec db pg_dump -U lanparty lanparty > backup.sql`.
 - **Custom themes** go into `./themes/<id>/` next to the compose file, which is mounted read-only
   as `THEMES_DIR`.
-- **Updating:** `git pull && docker compose up -d --build`. The schema is updated at startup.
+- **Updating:** `docker compose pull && docker compose up -d`. The schema is updated at startup.
+  Pin `LANPARTY_VERSION` to a release to update only when you choose to.
 - The container runs as an unprivileged user and has a health check on `/api/info`.
+
+## Continuous integration
+
+GitHub Actions run the tests on every push, on SQLite (Python 3.11 and 3.13) and on PostgreSQL 17
+(`.github/workflows/tests.yml`). `.github/workflows/docker.yml` builds the image for pull requests
+without publishing it. On `main` and on `v*` tags it runs the tests first and then publishes the
+image to GHCR. Tagging `v1.2.3` publishes `:1.2.3` and `:1.2`; `main` publishes `:latest` and
+`:sha-<commit>`.
 
 ## Deployment notes
 

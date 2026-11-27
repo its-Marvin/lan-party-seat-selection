@@ -60,6 +60,9 @@ def create_app(config: dict | None = None) -> Flask:
     )
     if config:
         app.config.update(config)
+        if "DATABASE" in config and "DATABASE_URL" not in config:
+            # an explicit SQLite path (e.g. a test's temp file) beats an inherited DATABASE_URL
+            app.config["DATABASE_URL"] = ""
 
     password = app.config["ADMIN_PASSWORD"]
     if not password:

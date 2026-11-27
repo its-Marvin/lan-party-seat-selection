@@ -1,5 +1,7 @@
 # Run the app with PostgreSQL:   cp .env.example .env   (set the passwords)
-#                                docker compose up -d --build
+#                                docker compose up -d
+# The image is built by GitHub Actions. To build it from this checkout instead:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 name: lanparty
 
 services:
@@ -20,8 +22,7 @@ services:
       retries: 20
 
   app:
-    build: .
-    image: lanparty-seat-selection
+    image: ghcr.io/its-marvin/lan-party-seat-selection:${LANPARTY_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       db:

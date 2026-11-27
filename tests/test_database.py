@@ -24,7 +24,9 @@ database_target = dbmod.database_target
     # literal % must not be read as a placeholder by psycopg
     ("SELECT 10 % 3, ?", "SELECT 10 %% 3, %s"),
     # quoted text stays as it is
-    ("SELECT '?', \"a?b\", ? FROM t WHERE x = 'it''s ? %'", "SELECT '?', \"a?b\", %s FROM t WHERE x = 'it''s ? %'"),
+    # quoted ? stays text; psycopg reads % even inside quotes, so it is doubled there too
+    ("SELECT '?', \"a?b\", ? FROM t WHERE x = 'it''s ? %'", "SELECT '?', \"a?b\", %s FROM t WHERE x = 'it''s ? %%'"),
+    ("SELECT '100%', ?", "SELECT '100%%', %s"),
 ])
 def test_placeholders_are_translated_for_psycopg(sql, expected):
     assert dbmod.pg_sql(sql) == expected
@@ -106,6 +108,18 @@ def test_compose_requires_secrets_and_keeps_the_database_private():
     assert re.search(r"^ADMIN_PASSWORD=$", example, re.M) and re.search(r"^POSTGRES_PASSWORD=$", example, re.M)
 
 
+def test_compose_pulls_the_published_image_and_the_override_builds_it():
+    compose = (ROOT / "docker-compose.yml").read_text()
+    assert "build:" not in compose
+    assert "image: ghcr.io/its-marvin/lan-party-seat-selection:${LANPARTY_VERSION:-latest}" in compose
+    override = (ROOT / "docker-compose.build.yml").read_text()
+    assert "build: ." in override and "image: lanparty-seat-selection:local" in override
+    # the workflow publishes to the image the compose file pulls
+    workflow = (ROOT / ".github/workflows/docker.yml").read_text()
+    assert "ghcr.io/${GITHUB_REPOSITORY,,}" in workflow
+    assert "needs: tests" in workflow and "push: ${{ github.event_name == 'push' }}" in workflow
+
+
 def test_image_runs_unprivileged_and_leaves_private_files_out():
     dockerfile = (ROOT / "Dockerfile").read_text()
     assert re.search(r"^USER (?!root)\w+", dockerfile, re.M)
@@ -115,3 +129,44 @@ def test_image_runs_unprivileged_and_leaves_private_files_out():
     # only the top-level themes folder is left out, not the built-in lanparty/themes
     assert "themes" in ignored and "**/themes" not in ignored
     assert ".env" in (ROOT / ".gitignore").read_text().split()
+
+
+# --- isolation and input PostgreSQL can't store -------------------------------------
+
+def test_inherited_database_url_does_not_override_an_explicit_sqlite_path(tmp_path, monkeypatch):
+    """A DATABASE_URL in the shell must never send a test's writes to a real database."""
+    from lanparty import create_app
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody@nowhere.invalid/real-data")
+    app = create_app({"TESTING": True, "DATABASE": str(tmp_path / "t.sqlite3")})
+    assert app.config["DATABASE_URL"] == ""
+    assert database_target(app.config) == str(tmp_path / "t.sqlite3")
+
+
+@pytest.fixture()
+def coded_app(tmp_path):
+    from lanparty import create_app
+    from tests.helpers import set_event_code
+
+    return set_event_code(create_app({"TESTING": True, "DATABASE": str(tmp_path / "nul.sqlite3"),
+                                      "ADMIN_PASSWORD": "admin-password-123"}))
+
+
+@pytest.mark.parametrize("field", ["name", "email"])
+def test_registration_rejects_nul_characters(coded_app, field):
+    from tests.helpers import EVENT_CODE
+
+    data = {"name": "Ada Lovelace", "email": "ada@example.com", "event_code": EVENT_CODE}
+    data[field] = data[field][:3] + "\x00" + data[field][3:]
+    resp = coded_app.test_client().post("/api/register", json=data)
+    assert resp.status_code == 400 and "NUL" in resp.get_json()["error"]
+
+
+def test_admin_input_rejects_nested_nul_characters(coded_app):
+    admin = coded_app.test_client()
+    assert admin.post("/api/admin/login", json={"password": "admin-password-123"}).status_code == 200
+    assert admin.put("/api/admin/settings", json={"event_name": "LAN\x00"}).status_code == 400
+    layout = admin.get("/api/admin/layout").get_json()
+    layout["groups"][0]["label"] = "\x00"
+    assert admin.put("/api/admin/layout", json=layout).status_code == 400
+    assert admin.put("/api/admin/settings", json={"event_name": "LAN"}).status_code == 200

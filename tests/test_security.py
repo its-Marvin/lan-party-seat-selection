@@ -423,7 +423,9 @@ def test_audit_requires_admin(client):
 
 
 def test_actor_name_is_sanitised(app, client):
-    assert login(client, name="Bob‮\x00" + "x" * 100).get_json()["actor"] == "Bob" + "x" * 37
+    assert login(client, name="Bob‮\x07" + "x" * 100).get_json()["actor"] == "Bob" + "x" * 37
+    # NUL is refused outright (PostgreSQL can't store it), like in every JSON body
+    assert login(client, name="Bob\x00").status_code == 400
 
 
 # --- migration of databases from older versions ------------------------------

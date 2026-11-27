@@ -261,10 +261,11 @@ _DML = re.compile(r"\s*(INSERT|UPDATE|DELETE|REPLACE)\b", re.IGNORECASE)
 
 @lru_cache(maxsize=512)
 def pg_sql(sql: str) -> str:
-    """``?`` placeholders to psycopg's ``%s`` (literal ``%`` doubled), skipping quoted text."""
+    """``?`` placeholders to psycopg's ``%s``. A ``?`` inside quotes stays text; every
+    ``%`` is doubled, inside quotes too (psycopg reads ``%`` everywhere)."""
     def swap(m):
         token = m.group()
-        return "%s" if token == "?" else "%%" if token == "%" else token
+        return "%s" if token == "?" else token.replace("%", "%%")
     return _SQL_TOKENS.sub(swap, sql)
 
 

@@ -59,8 +59,19 @@ def _finite_float(text):
     return value
 
 
+def _contains_nul(value) -> bool:
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_contains_nul(k) or _contains_nul(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_contains_nul(v) for v in value)
+    return False
+
+
 def json_body() -> dict:
-    """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON types)."""
+    """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON
+    types, and NUL characters, which PostgreSQL can't store in text)."""
     if not request.is_json:
         raise ApiError(415, tr("Expected a JSON request body (Content-Type: application/json)."))
     try:
@@ -70,6 +81,8 @@ def json_body() -> dict:
         raise ApiError(400, tr("Malformed JSON.")) from None
     if not isinstance(data, dict):
         raise ApiError(400, tr("Expected a JSON object."))
+    if _contains_nul(data):
+        raise ApiError(400, tr("Text must not contain NUL characters."))
     return data
 
 

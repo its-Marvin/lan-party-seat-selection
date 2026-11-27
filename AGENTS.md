@@ -20,8 +20,17 @@ Requirements from the owner: **no Java**, tests and README required.
   framework. pytest for tests.
 - Database: SQLite through stdlib `sqlite3` (default, dev and tests) **or** PostgreSQL through
   psycopg 3 when `DATABASE_URL` is set (Docker deployment). Same queries for both, see below.
+  A `DATABASE` passed in `create_app(config)` without `DATABASE_URL` clears an inherited
+  `DATABASE_URL`, so tests can never write to a real database from the shell environment.
 - Docker: `Dockerfile` (python:3.13-slim, gunicorn 27 with `--no-control-socket`, non-root) and
-  `docker-compose.yml` (app + postgres:17-alpine, secrets from `.env`, see `.env.example`).
+  `docker-compose.yml` (pulls `ghcr.io/its-marvin/lan-party-seat-selection:${LANPARTY_VERSION}`
+  + postgres:17-alpine, secrets from `.env`, see `.env.example`). `docker-compose.build.yml` is the
+  override that builds from the checkout instead.
+- CI: `.github/workflows/tests.yml` (push to any branch except main; SQLite on 3.11/3.13 and
+  Postgres 17) and `docker.yml` (PRs: build only; main and `v*` tags: calls tests.yml, then pushes
+  a multi-arch image to GHCR). Lint workflows with
+  `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest`. The repo is public; after
+  the first publish, check that the GHCR package is public too (new packages can start private).
 - The venv is at `.venv`. There is no system pip, and Node is not installed.
 
 ```bash
@@ -146,7 +155,8 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Participants use device tokens (`user_tokens`, stored hashed). One-time login links are
   `/#login=<code>`, kept in the URL fragment so they stay out of server logs. They are valid
   for `LOGIN_CODE_HOURS` (default **168 h = 7 days**, the owner wants at least a week).
-- Strict JSON parsing (rejects NaN/Infinity and overflowing numbers), 256 KB body limit,
+- Strict JSON parsing (rejects NaN/Infinity, overflowing numbers and NUL characters anywhere,
+  which PostgreSQL can't store), 256 KB body limit,
   `Cache-Control: no-store` on `/api`, `TRUSTED_PROXIES` for ProxyFix.
 - Audit everything an admin would want to trace (`security.audit`). Inside a write transaction
   use `security.record_audit()` (no commit), so the entry describes exactly the change made under
