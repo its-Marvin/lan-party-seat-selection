@@ -129,7 +129,7 @@ def test_admin_logins_are_limited_per_ipv6_network(app, client):
 def test_admin_logins_log_only_the_network(app, client):
     admin_login(client, addr="2001:db8:abcd:12:1:2:3:4")
     client.post("/api/admin/login", json={"name": "Mallory", "password": "wrong"}, **ip("198.51.100.23"))
-    assert audit(app, "admin.login") == [{"network": "2001:db8:abcd::/48"}]
+    assert audit(app, "admin.login") == [{"network": "2001:db8:abcd::/48", "mode": "start"}]
     assert audit(app, "admin.login_failed") == [{"network": "198.51.100.0/24", "name": "Mallory"}]
     everything = " ".join(r["details"] for r in sql(app, "SELECT details FROM audit_log"))
     assert "198.51.100.23" not in everything and "1:2:3:4" not in everything

@@ -10,11 +10,88 @@ async function loadChecks() {
   $("checks").replaceChildren(...checks.map((c) => el("li", { class: `check ${c.level}` }, c.text)));
 }
 
+const utcDate = (text) => (text ? formatDateTime(text.replace(" ", "T") + "Z") : "–");
+
+let startMode = false;
+
+async function loadAdmins() {
+  const data = await api("GET", "/admin/admins");
+  startMode = data.start_mode;
+  const mode = $("admins-mode");
+  mode.textContent = startMode ? t("admin.securityPage.startMode") : t("admin.securityPage.accounts", { count: data.admins.length });
+  mode.classList.toggle("warning", startMode);
+  $("add-admin-legend").textContent = t(startMode ? "admin.securityPage.firstLegend" : "admin.securityPage.addLegend");
+  $("add-admin-help").textContent = startMode ? t("admin.securityPage.firstHelp") : "";
+  $("add-admin-help").hidden = !startMode;
+  $("add-admin-button").textContent = t(startMode ? "admin.securityPage.createFirst" : "admin.securityPage.addAdmin");
+  $("own-password-card").hidden = startMode;
+  $("admins").replaceChildren(...(data.admins.length ? data.admins.map((a) => el("tr", {},
+    el("td", {}, a.current ? t("admin.securityPage.you", { actor: a.name }) : a.name),
+    el("td", { class: "small" }, utcDate(a.last_login_at)),
+    el("td", { class: "small" }, t("admin.securityPage.createdOn", { date: utcDate(a.created_at), by: a.created_by || "–" })),
+    el("td", { class: "actions-cell" }, a.current ? "" : el("button", {
+      type: "button", class: "danger", onclick: () => removeAdmin(a),
+    }, t("admin.securityPage.remove"))),
+  )) : [el("tr", {}, el("td", { colspan: 4, class: "muted" }, t("admin.securityPage.noAccounts")))]));
+  labelRows($("admins"));
+}
+
+async function onAddAdmin(event) {
+  event.preventDefault();
+  const f = event.target;
+  const msg = $("admins-msg");
+  showMessage(msg, "");
+  if (f.password.value !== f.repeat.value) {
+    showMessage(msg, t("admin.securityPage.mismatch"));
+    return;
+  }
+  const current = $("admins-current").value;
+  if (!current) {
+    showMessage(msg, t("admin.securityPage.needCurrent"));
+    $("admins-current").focus();
+    return;
+  }
+  try {
+    const result = await api("POST", "/admin/admins", { name: f.name.value, password: f.password.value, current });
+    f.reset();
+    $("admins-current").value = "";
+    if (result.start_mode_ended) {
+      // start mode is over: everyone (including this session) logs in with an account now
+      await AdminShell.check();
+      showMessage($("login-msg"), t("admin.securityPage.firstCreated", { name: result.name }), "success");
+      $("login-form").name.value = result.name;
+      $("login-form").password.focus();
+      return;
+    }
+    showMessage(msg, t("admin.securityPage.added", { name: result.name }), "success");
+    await Promise.all([loadAdmins(), loadChecks(), loadAudit()]);
+  } catch (err) {
+    await AdminShell.handle(err, msg);
+  }
+}
+
+async function removeAdmin(admin) {
+  const msg = $("admins-msg");
+  showMessage(msg, "");
+  const current = $("admins-current").value;
+  if (!current) {
+    showMessage(msg, t("admin.securityPage.needCurrent"));
+    $("admins-current").focus();
+    return;
+  }
+  if (!confirm(t("admin.securityPage.confirmRemove", { name: admin.name }))) return;
+  try {
+    await api("DELETE", `/admin/admins/${admin.id}`, { current });
+    $("admins-current").value = "";
+    showMessage(msg, t("admin.securityPage.removed", { name: admin.name }), "success");
+    await Promise.all([loadAdmins(), loadSessions(), loadChecks(), loadAudit()]);
+  } catch (err) {
+    await AdminShell.handle(err, msg);
+  }
+}
+
 async function loadSessions() {
-  const { sessions, password } = await api("GET", "/admin/sessions");
-  $("password-source").textContent = password.source === "admin"
-    ? t("admin.securityPage.sourceAdmin", { date: password.changed_at ? formatDateTime(password.changed_at.replace(" ", "T") + "Z") : "?" })
-    : t("admin.securityPage.sourceEnv");
+  const { sessions } = await api("GET", "/admin/sessions");
   $("sessions").replaceChildren(...sessions.map((s) => el("tr", {},
     el("td", {}, s.current ? t("admin.securityPage.you", { actor: s.actor }) : s.actor),
     el("td", { class: "small" }, formatDateTime(s.created_at)),
@@ -86,7 +163,7 @@ async function onChangePassword(event) {
   try {
     await api("POST", "/admin/password", { current: f.current.value, new: f.new.value });
     f.reset();
-    showMessage(msg, t("admin.securityPage.changed"), "success");
+    showMessage(msg, t("admin.securityPage.changedOwn"), "success");
     await Promise.all([loadSessions(), loadChecks(), loadAudit()]);
   } catch (err) {
     await AdminShell.handle(err, msg);
@@ -104,7 +181,8 @@ const labelCells = labelRows;
 
 const SECURITY_ACTIONS = new Set(["admin.login_failed", "admin.logout_all", "user.login_link_created",
   "event_code.limit_reached", "admin.password_changed", "admin.password_change_failed", "admin.password_reset",
-  "admin.session_ended", "participants.access_reset", "mail.test_sent"]);
+  "admin.session_ended", "participants.access_reset", "mail.test_sent", "admin.account_created",
+  "admin.account_removed", "admin.accounts_reset", "admin.reauth_failed"]);
 
 function describeDetails(details) {
   return Object.entries(details).map(([key, value]) => {
@@ -136,13 +214,15 @@ document.addEventListener("DOMContentLoaded", () => {
   limitsForm = configForm({ section: "security", form: $("limits-form"), fieldset: $("limits-fields"),
     message: $("limits-msg") });
   $("password-form").addEventListener("submit", onChangePassword);
+  $("add-admin-form").addEventListener("submit", onAddAdmin);
   for (const button of document.querySelectorAll("[data-action]")) {
     button.addEventListener("click", () => resetAccess(button.dataset.action));
   }
   $("refresh-checks").addEventListener("click", () => loadChecks().catch((err) => AdminShell.handle(err)));
   $("refresh-audit").addEventListener("click", () => loadAudit().catch((err) => AdminShell.handle(err)));
   AdminShell.start({
-    onSession: () => Promise.all([loadChecks(), loadSessions(), loadAccessEvents(), limitsForm.load(), loadAudit()]),
+    onSession: () => Promise.all([loadChecks(), loadAdmins(), loadSessions(), loadAccessEvents(), limitsForm.load(),
+      loadAudit()]),
     unsaved: () => limitsForm.dirty,
   });
 });

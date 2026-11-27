@@ -404,31 +404,6 @@ def test_given_up_mails_can_be_retried(app, admin, client):
 
 # --- security area -----------------------------------------------------------------------
 
-def test_changing_the_admin_password(app, admin):
-    other = app.test_client()
-    other.post("/api/admin/login", json={"name": "Bob", "password": ADMIN_PW})
-    assert admin.post("/api/admin/password", json={"current": "wrong", "new": "x" * 12}).status_code == 403
-    assert admin.post("/api/admin/password", json={"current": ADMIN_PW, "new": "short"}).status_code == 400
-    assert admin.post("/api/admin/password", json={"current": ADMIN_PW, "new": "a new long password"}).status_code == 200
-    assert admin.get("/api/admin/session").get_json()["admin"] is True        # stays logged in
-    assert other.get("/api/admin/session").get_json()["admin"] is False       # everyone else is out
-    fresh = app.test_client()
-    assert fresh.post("/api/admin/login", json={"name": "A", "password": ADMIN_PW}).status_code == 401
-    assert fresh.post("/api/admin/login", json={"name": "A", "password": "a new long password"}).status_code == 200
-    stored = sql(app, "SELECT value FROM settings WHERE key = '_admin_password'")[0]["value"]
-    assert stored.startswith("scrypt$") and "a new long password" not in stored
-    assert admin.get("/api/admin/sessions").get_json()["password"]["source"] == "admin"
-
-
-def test_resetting_the_admin_password_brings_back_the_environment_one(app, admin):
-    from lanparty import manage
-
-    admin.post("/api/admin/password", json={"current": ADMIN_PW, "new": "a new long password"})
-    assert manage.reset_admin_password(app) == 0
-    assert admin.get("/api/admin/session").get_json()["admin"] is False
-    assert app.test_client().post("/api/admin/login", json={"name": "A", "password": ADMIN_PW}).status_code == 200
-
-
 def test_admins_see_and_end_sessions(app, admin):
     other = app.test_client()
     other.post("/api/admin/login", json={"name": "Bob", "password": ADMIN_PW})
@@ -463,7 +438,7 @@ def test_admins_can_void_participants_access(app, client, admin):
 def test_security_checks_and_overview(app, admin):
     checks = {c["id"]: c for c in admin.get("/api/admin/security/checks").get_json()["checks"]}
     assert checks["https"]["level"] == "warn"            # the test client uses http
-    assert checks["password"]["level"] == "info"         # still from ADMIN_PASSWORD
+    assert checks["accounts"]["level"] == "warn"         # start mode: no admin accounts yet
     assert checks["scheduler"]["level"] == "warn"        # mail on, scheduler never ran
     overview = admin.get("/api/admin/overview").get_json()
     assert overview["warnings"] >= 2 and overview["mail"]["enabled"] is True

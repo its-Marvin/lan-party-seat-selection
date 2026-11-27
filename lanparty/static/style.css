@@ -192,6 +192,7 @@ label.checkbox.inline { display: inline-flex; margin: 0 .5rem; }
 label small { line-height: 1.35; }
 .access-actions p { margin: .6rem 0; }
 .access-actions .muted { display: block; margin-top: .2rem; }
+.confirm-password { max-width: 26rem; }
 
 /* admin areas: navigation, overview tiles, check lists */
 .admin-nav { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; padding-bottom: .6rem; }

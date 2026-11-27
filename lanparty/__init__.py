@@ -74,7 +74,8 @@ def create_app(config: dict | None = None) -> Flask:
 
     password = app.config["ADMIN_PASSWORD"]
     if not password:
-        app.logger.warning("ADMIN_PASSWORD not set; the admin area is disabled.")
+        app.logger.warning("ADMIN_PASSWORD not set: only existing admin accounts can log in "
+                           "(without any, the admin area is disabled).")
     elif (len(password) < MIN_ADMIN_PASSWORD_LENGTH
           and not app.config["ALLOW_WEAK_ADMIN_PASSWORD"] and not app.config.get("TESTING")):
         raise RuntimeError(

@@ -72,9 +72,9 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/events.py` | Events and their status from dates (`local_now()` in `TIMEZONE`), `active_id()` (cached in `g`), `default_admin_id()`, overlap check, `create()`/`delete()` (no commit) |
 | `lanparty/settings.py` | Per-event settings: `DEFAULTS`, `load(event_id)`, `validate_update(data, event_id)`, `save(values, event_id)` (does **not** commit) |
 | `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `load(event_id)`, `save(layout, moves, event_id)` (no commit) |
-| `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions, admin password (`check_admin_password()`, scrypt hash in `settings` overrides `ADMIN_PASSWORD`, `password_tag()`) |
+| `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions, admin accounts (`admin_users`, scrypt; `authenticate_admin()`, `check_session_password()`, `session_tag()`), start mode with `ADMIN_PASSWORD` while no account exists |
 | `lanparty/appsettings.py` | App-wide settings edited on `/admin/settings`, `/admin/mail`, `/admin/security`: `FIELDS` (section, type, env default), `value(key)`, `config_value(CONFIG_KEY)`, `validate_update()`, `save()` (no commit). Stored as `cfg.<key>` in `settings`; unset = `app.config` (env) default |
-| `lanparty/admin_api.py` | Endpoints of the admin areas (config sections, overview, mail queue/test/retry, password, sessions, participant access, security checks); adds routes to the `/api` blueprint |
+| `lanparty/admin_api.py` | Endpoints of the admin areas (config sections, overview, mail queue/test/retry, admin accounts and own password, sessions, participant access, security checks); adds routes to the `/api` blueprint |
 | `lanparty/mail.py` | Mail core: `enabled()`/`problems()`, `Mail` blocks → text + HTML in the event theme's light tokens (`palette()`), outbox `enqueue()` (inside the write transaction), `deliver_pending()` (claims rows), `flush_soon()` (background thread; synchronous under TESTING), `transmit()` (SMTP, or `MAIL_BACKEND` console/memory) |
 | `lanparty/notify.py` | The wording of each mail (`tr_in(lang, …)`, participant's `users.lang`): confirmation, payment request/reminder/confirmed, new personal link, admin message, test mail |
 | `lanparty/jobs.py` | Scheduler `python -m lanparty.jobs [--once] [--check]`: expiry, reminders, mail retries, pruning, heartbeat (`_jobs_last_run`) |
@@ -175,7 +175,15 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Admins must give a name at login (400 otherwise, checked before the rate limit so it costs no
   attempt); it is the `actor` in the audit log. There is no `"admin"` fallback.
 - Admin auth uses a server-side session (`lp_admin` cookie: HttpOnly, SameSite=Strict,
-  Path=/api) with 60 min idle and 12 h max. Changing `ADMIN_PASSWORD` invalidates all sessions.
+  Path=/api) with 60 min idle and 12 h max. Each session row stores `admin_id` and a tag derived from
+  that admin's password hash (`session_tag()`): a password change ends only that admin's sessions, a
+  removed account ends them all, and start-mode sessions (`admin_id` NULL, `ADMIN_PASSWORD`) end as
+  soon as the first account exists.
+- Admin accounts: start mode (no `admin_users` rows) accepts `ADMIN_PASSWORD` with any name; after
+  the first account only accounts work. Names are unique by `casefold()` (`name_key`). Adding or
+  removing admins and changing a password re-check the acting admin's password
+  (`_reauthenticate`, counted in `admin_login_fail`). Nobody removes their own account.
+  `manage reset-admin-password` deletes all accounts and sessions.
   Passwords under 12 characters are refused unless `ALLOW_WEAK_ADMIN_PASSWORD=1` or TESTING.
 - Participants use device tokens (`user_tokens`, stored hashed). `/api/me/logout` deletes this
   device's token; `/api/me/logout-others` deletes the others and the person's login codes.
@@ -213,8 +221,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Runtime settings with an env default: read them through `appsettings.value()` /
   `api.conf()` (which goes through `config_value()`), not `current_app.config`.
 - Secrets in appsettings are write-only: `Field.public()` never returns them, the audit says
-  "(changed)". The admin password goes through `security.set_admin_password()` (scrypt), and
-  changing it ends every session (`password_tag()`).
+  "(changed)". Admin passwords live in `admin_users` (scrypt), never in appsettings.
 - Theme values reach mails only via `mail.palette()`, which drops anything but plain values.
 
 ### Translations
@@ -295,7 +302,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   with screenshots), #13 (AGENTS.md state) and #14: optional mail
   (confirmation within 2 h, payment request, reminders, seat confirmation with a personal link,
   admin messages, themed mails, scheduler service), admin areas `/admin/events`, `/settings`,
-  `/mail`, `/security` (admin password in the DB, sessions, participant access, checks), default
+  `/mail`, `/security` (admin accounts with own passwords, sessions, participant access, checks), default
   payment window one week. After the stack went wrong (see below), #3 and #4 reached `main`
   through #7, and #5 through #8. All review threads are resolved.
 - Dependabot opens weekly update PRs (the first, #12, bumps the Python group). Merging them is the

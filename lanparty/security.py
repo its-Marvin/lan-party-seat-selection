@@ -179,8 +179,6 @@ def audit_entries(limit: int = 200) -> list[dict]:
 
 # --- admin sessions --------------------------------------------------------
 
-ADMIN_HASH_KEY = "_admin_password"            # scrypt hash, set on /admin/security
-ADMIN_CHANGED_KEY = "_admin_password_changed"
 MIN_PASSWORD_LENGTH = 12
 SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1}
 
@@ -201,59 +199,111 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(candidate.hex(), digest)
 
 
-def _setting(key: str) -> str | None:
-    row = get_db().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-    return row["value"] if row else None
+# Checked when a name has no account, so a wrong name takes as long as a wrong password.
+_DUMMY_HASH = None
 
 
-def admin_password_info() -> dict:
-    """Where the admin password comes from: ``admin`` (set on /admin/security),
-    ``environment`` (ADMIN_PASSWORD) or None (admin area disabled)."""
-    if _setting(ADMIN_HASH_KEY):
-        return {"source": "admin", "changed_at": _setting(ADMIN_CHANGED_KEY)}
-    return {"source": "environment" if current_app.config["ADMIN_PASSWORD"] else None, "changed_at": None}
+def _dummy_hash() -> str:
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password(secrets.token_hex(16))
+    return _DUMMY_HASH
+
+
+# --- admin accounts ------------------------------------------------------------------
+#
+# Admins log in with their own name and password (table admin_users). As long as no
+# account exists, the app is in start mode: ADMIN_PASSWORD from the environment
+# works with any name, so the first account can be created on /admin/security.
+# Once there is an account, ADMIN_PASSWORD no longer works.
+# ``python -m lanparty.manage reset-admin-password`` deletes every account.
+
+def name_key(name: str) -> str:
+    """Admin names are unique regardless of upper/lower case."""
+    return name.casefold()
+
+
+def admin_accounts() -> list:
+    return get_db().execute("SELECT * FROM admin_users ORDER BY name_key").fetchall()
+
+
+def accounts_exist() -> bool:
+    return get_db().execute("SELECT 1 FROM admin_users LIMIT 1").fetchone() is not None
 
 
 def admin_enabled() -> bool:
-    return admin_password_info()["source"] is not None
+    return accounts_exist() or bool(current_app.config["ADMIN_PASSWORD"])
 
 
-def check_admin_password(password: str) -> bool:
-    stored = _setting(ADMIN_HASH_KEY)
-    if stored:
-        return verify_password(password, stored)
+def authenticate_admin(name: str, password: str):
+    """``(actor, admin_id)`` if the login is right, else None. In start mode (no
+    accounts) the environment password works with any name, and ``admin_id`` is None."""
+    if accounts_exist():
+        row = get_db().execute("SELECT * FROM admin_users WHERE name_key = ?", (name_key(name),)).fetchone()
+        ok = verify_password(password, row["password_hash"] if row else _dummy_hash())
+        return (row["name"], row["id"]) if ok and row else None
     expected = current_app.config["ADMIN_PASSWORD"]
     # compare digests, so the comparison takes the same time whatever the lengths
-    return bool(expected) and hmac.compare_digest(sha256(password), sha256(expected))
+    if expected and hmac.compare_digest(sha256(password), sha256(expected)):
+        return name, None
+    return None
 
 
-def set_admin_password(password: str | None) -> None:
-    """Store a new admin password (None: forget it, ADMIN_PASSWORD applies again).
-    Every session ends, because the password tag changes."""
+def check_session_password(session, password: str) -> bool:
+    """Re-check the password of the admin behind ``session`` (for sensitive changes)."""
+    if session["admin_id"] is None:
+        expected = current_app.config["ADMIN_PASSWORD"]
+        return bool(expected) and not accounts_exist() and hmac.compare_digest(sha256(password), sha256(expected))
+    row = get_db().execute("SELECT password_hash FROM admin_users WHERE id = ?", (session["admin_id"],)).fetchone()
+    return row is not None and verify_password(password, row["password_hash"])
+
+
+def create_admin_account(name: str, password: str, created_by: str) -> int:
+    """Call inside a write transaction. Raises IntegrityError if the name is taken."""
+    return get_db().insert(
+        "INSERT INTO admin_users (name, name_key, password_hash, created_by, password_changed_at) "
+        "VALUES (?, ?, ?, ?, ?)", (name, name_key(name), hash_password(password), created_by, utc_now()))
+
+
+def set_admin_account_password(admin_id: int, password: str) -> None:
+    """New password for one account; its sessions end (their tag no longer matches)."""
+    get_db().execute("UPDATE admin_users SET password_hash = ?, password_changed_at = ? WHERE id = ?",
+                     (hash_password(password), utc_now(), admin_id))
+
+
+def remove_all_admin_accounts() -> int:
     db = get_db()
-    if password is None:
-        db.execute("DELETE FROM settings WHERE key IN (?, ?)", (ADMIN_HASH_KEY, ADMIN_CHANGED_KEY))
+    db.execute("DELETE FROM admin_sessions")
+    return db.execute("DELETE FROM admin_users").rowcount
+
+
+def session_tag(admin_id: int | None) -> str | None:
+    """What a valid session of this admin must carry: it changes with the password,
+    so a password change (or a removed account, or leaving start mode) ends sessions."""
+    if admin_id is None:
+        source = current_app.config["ADMIN_PASSWORD"]
+        if not source or accounts_exist():
+            return None
+        source = "env:" + source
     else:
-        for key, value in ((ADMIN_HASH_KEY, hash_password(password)), (ADMIN_CHANGED_KEY, utc_now())):
-            db.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
-                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
-
-
-def password_tag() -> str:
-    """Fingerprint of the current admin password; changing it ends all sessions."""
-    source = _setting(ADMIN_HASH_KEY) or current_app.config["ADMIN_PASSWORD"]
+        row = get_db().execute("SELECT password_hash FROM admin_users WHERE id = ?", (admin_id,)).fetchone()
+        if row is None:
+            return None
+        source = f"account:{admin_id}:{row['password_hash']}"
     return hmac.new(_pepper().encode(), source.encode(), hashlib.sha256).hexdigest()
 
 
-def create_admin_session(actor: str) -> str:
+def create_admin_session(actor: str, admin_id: int | None) -> str:
     token = new_secret()
     now = time.time()
     db = get_db()
     db.execute(
-        "INSERT INTO admin_sessions (token_hash, actor, password_tag, created_at, last_seen) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (sha256(token), actor, password_tag(), now, now),
+        "INSERT INTO admin_sessions (token_hash, actor, admin_id, password_tag, created_at, last_seen) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (sha256(token), actor, admin_id, session_tag(admin_id), now, now),
     )
+    if admin_id is not None:
+        db.execute("UPDATE admin_users SET last_login_at = ? WHERE id = ?", (utc_now(), admin_id))
     db.commit()
     return token
 
@@ -269,12 +319,16 @@ def current_admin_session(refresh: bool = True):
     now = time.time()
     db = get_db()
     db.execute(
-        "DELETE FROM admin_sessions WHERE last_seen < ? OR created_at < ? OR password_tag != ?",
+        "DELETE FROM admin_sessions WHERE last_seen < ? OR created_at < ?",
         (now - appsettings.value("admin_session_idle_minutes") * 60,
-         now - appsettings.value("admin_session_max_hours") * 3600,
-         password_tag()),
+         now - appsettings.value("admin_session_max_hours") * 3600),
     )
     row = db.execute("SELECT * FROM admin_sessions WHERE token_hash = ?", (sha256(token),)).fetchone()
+    if row is not None:
+        expected = session_tag(row["admin_id"])
+        if expected is None or not hmac.compare_digest(expected, row["password_tag"]):
+            db.execute("DELETE FROM admin_sessions WHERE token_hash = ?", (row["token_hash"],))
+            row = None
     if row is not None and refresh:
         db.execute("UPDATE admin_sessions SET last_seen = ? WHERE token_hash = ?", (now, row["token_hash"]))
     db.commit()

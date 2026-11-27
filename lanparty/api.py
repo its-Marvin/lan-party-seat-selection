@@ -939,13 +939,16 @@ def admin_login():
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
     password = str(data.get("password") or "")
-    if not sec.check_admin_password(password):
+    login = sec.authenticate_admin(name, password)
+    if login is None:
         sec.audit("anonymous", "admin.login_failed", network=network, name=name)
-        raise ApiError(401, tr("Wrong password."))
+        # the same answer for an unknown name and a wrong password
+        raise ApiError(401, tr("Wrong name or password."))
     sec.release(ip_attempt)
     sec.release(global_attempt)
-    token = sec.create_admin_session(name)
-    sec.audit(name, "admin.login", network=network)
+    name, admin_id = login            # an account's name as stored (its spelling)
+    token = sec.create_admin_session(name, admin_id)
+    sec.audit(name, "admin.login", network=network, mode="account" if admin_id else "start")
     sec.prune_audit_log()
     resp = jsonify(ok=True, actor=name)
     sec.set_admin_cookie(resp, token)

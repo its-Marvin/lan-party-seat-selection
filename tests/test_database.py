@@ -68,7 +68,7 @@ def tables(schema: str) -> dict[str, set[str]]:
 
 def test_sqlite_and_postgres_schemas_have_the_same_columns():
     sqlite, pg = tables(dbmod.SCHEMA), tables(dbmod.PG_SCHEMA)
-    assert sqlite.keys() == pg.keys() and len(sqlite) == 10
+    assert sqlite.keys() == pg.keys() and len(sqlite) == 11
     # SQLite addresses rate_events by its implicit rowid, PostgreSQL by an id column
     pg["rate_events"].discard("id")
     assert sqlite == pg

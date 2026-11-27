@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import re
 import time
 
-from flask import current_app, jsonify, request
+from flask import current_app, g, jsonify, request
 
 from . import appsettings
 from . import events as ev
@@ -16,7 +16,7 @@ from . import security as sec
 from . import settings as cfg
 from .api import (ApiError, JOBS_HEARTBEAT, actor, admin_event_id, admin_required, bp, enforce_limit,
                   human_wait, json_body, revoke_tokens)
-from .db import get_db, utc_now, write_transaction
+from .db import IntegrityError, get_db, utc_now, write_transaction
 from .i18n import tr
 
 
@@ -163,34 +163,104 @@ def admin_mail_test():
 
 # --- security (/admin/security) -----------------------------------------------------
 
-@bp.post("/admin/password")
-@admin_required
-def admin_change_password():
-    """Set a new admin password. The current one is required (a stolen session alone
-    can't take over the admin area); every other session ends."""
-    data = json_body()
-    current, new = str(data.get("current") or ""), str(data.get("new") or "")
+def _reauthenticate(password) -> None:
+    """Sensitive changes need the acting admin's password again (a stolen session
+    alone isn't enough); failures count like failed logins."""
     key = sec.ip_hash()
     wait, attempt = sec.consume("admin_login_fail", key, appsettings.value("admin_login_max_per_ip"),
                                 appsettings.value("admin_login_window_minutes") * 60)
     if wait:
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
-    if not sec.check_admin_password(current):
-        sec.audit(actor(), "admin.password_change_failed", network=sec.anonymized_ip())
-        raise ApiError(403, tr("The current password is wrong."))
+    if not sec.check_session_password(g.admin, str(password or "")):
+        sec.audit(actor(), "admin.reauth_failed", network=sec.anonymized_ip())
+        raise ApiError(403, tr("Your current password is wrong."))
     sec.release(attempt)
-    if len(new) < sec.MIN_PASSWORD_LENGTH:
+
+
+def _check_new_password(password, name: str) -> str:
+    password = str(password or "")
+    if len(password) < sec.MIN_PASSWORD_LENGTH:
         raise ApiError(400, tr("The new password must be at least {n} characters long.", n=sec.MIN_PASSWORD_LENGTH))
-    if len(new) > 200:
+    if len(password) > 200:
         raise ApiError(400, tr("The new password must be at most 200 characters long."))
-    if new == current:
+    if sec.name_key(password) == sec.name_key(name):
+        raise ApiError(400, tr("The password must not be the name."))
+    return password
+
+
+def admin_dict(row) -> dict:
+    return {"id": row["id"], "name": row["name"], "created_at": row["created_at"], "created_by": row["created_by"],
+            "last_login_at": row["last_login_at"], "password_changed_at": row["password_changed_at"],
+            "current": row["id"] == g.admin["admin_id"]}
+
+
+@bp.get("/admin/admins")
+@admin_required
+def admin_list_admins():
+    return jsonify(admins=[admin_dict(r) for r in sec.admin_accounts()],
+                   start_mode=g.admin["admin_id"] is None, current_id=g.admin["admin_id"])
+
+
+@bp.post("/admin/admins")
+@admin_required
+def admin_create_admin():
+    """Add an admin account (name and password). The first one ends start mode:
+    from then on ADMIN_PASSWORD no longer works and everyone logs in with an account."""
+    from .api import clean_actor_name
+
+    data = json_body()
+    _reauthenticate(data.get("current"))
+    name = clean_actor_name(data.get("name"))
+    if len(name) < 2:
+        raise ApiError(400, tr("The name must be between 2 and 40 characters."))
+    password = _check_new_password(data.get("password"), name)
+    first = not sec.accounts_exist()
+    try:
+        with write_transaction():
+            admin_id = sec.create_admin_account(name, password, actor())
+            sec.record_audit(actor(), "admin.account_created", name=name, admin_id=admin_id, first=first)
+    except IntegrityError:
+        raise ApiError(409, tr("There already is an admin called {name}.", name=name)) from None
+    if first:
+        sec.end_all_admin_sessions()     # start-mode sessions are over; log in with an account
+    return jsonify(id=admin_id, name=name, start_mode_ended=first), 201
+
+
+@bp.delete("/admin/admins/<int:admin_id>")
+@admin_required
+def admin_remove_admin(admin_id):
+    """Remove another admin (their sessions end with it). Nobody removes themselves,
+    so there is always at least one account once there was one."""
+    _reauthenticate(json_body().get("current"))
+    if admin_id == g.admin["admin_id"]:
+        raise ApiError(409, tr("You can't remove your own account."))
+    with write_transaction() as db:
+        row = db.execute("SELECT * FROM admin_users WHERE id = ?", (admin_id,)).fetchone()
+        if row is None:
+            raise ApiError(404, tr("Not found."))
+        db.execute("DELETE FROM admin_sessions WHERE admin_id = ?", (admin_id,))
+        db.execute("DELETE FROM admin_users WHERE id = ?", (admin_id,))
+        sec.record_audit(actor(), "admin.account_removed", name=row["name"], admin_id=admin_id)
+    return jsonify(ok=True)
+
+
+@bp.post("/admin/password")
+@admin_required
+def admin_change_password():
+    """Change your own password (needs the current one). Your other sessions end;
+    this one continues. Not available in start mode (create an account first)."""
+    if g.admin["admin_id"] is None:
+        raise ApiError(409, tr("Create an admin account first; ADMIN_PASSWORD itself is changed on the server."))
+    data = json_body()
+    _reauthenticate(data.get("current"))
+    new = _check_new_password(data.get("new"), g.admin["actor"])
+    if sec.check_session_password(g.admin, new):
         raise ApiError(400, tr("The new password must differ from the current one."))
     with write_transaction():
-        sec.set_admin_password(new)
+        sec.set_admin_account_password(g.admin["admin_id"], new)
         sec.record_audit(actor(), "admin.password_changed", network=sec.anonymized_ip())
-    sec.end_all_admin_sessions()
-    token = sec.create_admin_session(actor())   # this admin stays logged in
+    token = sec.create_admin_session(g.admin["actor"], g.admin["admin_id"])   # this device stays logged in
     resp = jsonify(ok=True)
     sec.set_admin_cookie(resp, token)
     return resp
@@ -210,8 +280,7 @@ def admin_sessions():
     rows = get_db().execute("SELECT * FROM admin_sessions ORDER BY last_seen DESC").fetchall()
     return jsonify(sessions=[
         {"id": _session_id(r["token_hash"]), "actor": r["actor"], "created_at": _iso(r["created_at"]),
-         "last_seen": _iso(r["last_seen"]), "current": r["token_hash"] == mine} for r in rows],
-        password=sec.admin_password_info())
+         "last_seen": _iso(r["last_seen"]), "current": r["token_hash"] == mine} for r in rows])
 
 
 @bp.delete("/admin/sessions/<session_id>")
@@ -288,14 +357,19 @@ def security_checks() -> list[dict]:
     if request.headers.get("X-Forwarded-For") and not config["TRUSTED_PROXIES"]:
         add("proxy", "warn", tr("Requests come through a proxy, but TRUSTED_PROXIES is 0: every visitor counts "
                                 "as the proxy, so the rate limits apply to everyone together."))
-    info = sec.admin_password_info()
-    if info["source"] == "environment":
-        add("password", "info", tr("The admin password comes from ADMIN_PASSWORD. Set your own below; it is "
-                                   "stored as a hash, not in a configuration file."))
+    accounts = sec.admin_accounts()
+    if not accounts:
+        add("accounts", "warn", tr("There are no admin accounts yet: anyone with ADMIN_PASSWORD can log in under "
+                                   "any name. Create an account for each admin below."))
         if len(config["ADMIN_PASSWORD"]) < 16:
             add("password-length", "warn", tr("The admin password is shorter than 16 characters."))
-    elif info["changed_at"] and datetime.fromisoformat(info["changed_at"]) < datetime.fromisoformat(utc_now(-24 * 365)):
-        add("password-age", "info", tr("The admin password hasn't been changed for over a year."))
+    else:
+        add("accounts", "ok", tr("Admin accounts: {count}. ADMIN_PASSWORD no longer works.", count=len(accounts)))
+        year_ago = datetime.fromisoformat(utc_now(-24 * 365))
+        stale = [a["name"] for a in accounts
+                 if a["password_changed_at"] and datetime.fromisoformat(a["password_changed_at"]) < year_ago]
+        if stale:
+            add("password-age", "info", tr("Passwords unchanged for over a year: {names}.", names=", ".join(stale)))
     if config["ALLOW_WEAK_ADMIN_PASSWORD"]:
         add("weak", "warn", tr("ALLOW_WEAK_ADMIN_PASSWORD is on: only use it for local development."))
     for e in ev.load_all():

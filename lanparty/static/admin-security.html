@@ -52,7 +52,7 @@
     <section class="card" id="login-card" hidden>
       <h2 data-i18n="admin.login.title">Log in</h2>
       <form id="login-form" class="form-row">
-        <label><span data-i18n="admin.login.name">Your name (for the audit log)</span>
+        <label><span data-i18n="admin.login.name">Admin name</span>
           <input name="name" maxlength="40" required autocomplete="name"></label>
         <label><span data-i18n="admin.login.password">Password</span>
           <input type="password" name="password" required autocomplete="current-password"></label>
@@ -71,19 +71,48 @@
       </section>
 
       <section class="card">
-        <h2 data-i18n="admin.securityPage.passwordTitle">Admin password</h2>
-        <p class="muted small" id="password-source"></p>
-        <form id="password-form" class="settings">
+        <h2 data-i18n="admin.securityPage.adminsTitle">Admin accounts</h2>
+        <p class="small" id="admins-mode"></p>
+        <div class="table-wrap">
+          <table class="stack">
+            <thead><tr>
+              <th data-i18n="admin.securityPage.adminName">Name</th><th data-i18n="admin.securityPage.lastLogin">Last login</th>
+              <th data-i18n="admin.securityPage.createdBy">Created</th><th data-i18n="admin.users.actions">Actions</th>
+            </tr></thead>
+            <tbody id="admins"></tbody>
+          </table>
+        </div>
+        <form id="add-admin-form" class="settings">
           <fieldset>
-            <legend data-i18n="admin.securityPage.passwordLegend">Change the password</legend>
-            <label><span data-i18n="admin.securityPage.current">Current password</span>
-              <input type="password" name="current" required autocomplete="current-password"></label>
-            <label><span data-i18n="admin.securityPage.new">New password (at least 12 characters)</span>
-              <input type="password" name="new" required minlength="12" maxlength="200" autocomplete="new-password"></label>
-            <label><span data-i18n="admin.securityPage.repeat">Repeat the new password</span>
+            <legend id="add-admin-legend" data-i18n="admin.securityPage.addLegend">Add an admin</legend>
+            <label><span data-i18n="admin.securityPage.adminName">Name</span>
+              <input name="name" required minlength="2" maxlength="40" autocomplete="off" spellcheck="false"></label>
+            <label><span data-i18n="admin.securityPage.new">Password (at least 12 characters)</span>
+              <input type="password" name="password" required minlength="12" maxlength="200" autocomplete="new-password"></label>
+            <label><span data-i18n="admin.securityPage.repeat">Repeat the password</span>
               <input type="password" name="repeat" required minlength="12" maxlength="200" autocomplete="new-password"></label>
           </fieldset>
-          <p class="muted small" data-i18n="admin.securityPage.passwordHelp">All admins share this password. Changing it logs out every other admin session; you stay logged in. Forgot it? On the server, python -m lanparty.manage reset-admin-password makes ADMIN_PASSWORD from the environment work again.</p>
+          <p class="muted small" id="add-admin-help" hidden></p>
+          <label class="confirm-password"><span data-i18n="admin.securityPage.confirmWith">Your current password (needed to add or remove admins)</span>
+            <input type="password" id="admins-current" autocomplete="current-password"></label>
+          <div class="actions"><button class="primary" id="add-admin-button" data-i18n="admin.securityPage.addAdmin">Add admin</button></div>
+        </form>
+        <p id="admins-msg" class="message"></p>
+      </section>
+
+      <section class="card" id="own-password-card" hidden>
+        <h2 data-i18n="admin.securityPage.passwordTitle">Your password</h2>
+        <form id="password-form" class="settings">
+          <fieldset>
+            <legend data-i18n="admin.securityPage.passwordLegend">Change your password</legend>
+            <label><span data-i18n="admin.securityPage.current">Current password</span>
+              <input type="password" name="current" required autocomplete="current-password"></label>
+            <label><span data-i18n="admin.securityPage.newOwn">New password (at least 12 characters)</span>
+              <input type="password" name="new" required minlength="12" maxlength="200" autocomplete="new-password"></label>
+            <label><span data-i18n="admin.securityPage.repeatOwn">Repeat the new password</span>
+              <input type="password" name="repeat" required minlength="12" maxlength="200" autocomplete="new-password"></label>
+          </fieldset>
+          <p class="muted small" data-i18n="admin.securityPage.passwordHelp">Changing it logs out your other sessions; this one stays. Forgot it? Another admin can remove your account and add it again. If nobody can log in any more, python -m lanparty.manage reset-admin-password on the server removes all accounts, and ADMIN_PASSWORD works again.</p>
           <div class="actions"><button class="primary" data-i18n="admin.securityPage.change">Change password</button></div>
         </form>
         <p id="password-msg" class="message"></p>

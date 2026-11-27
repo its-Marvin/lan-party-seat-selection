@@ -35,7 +35,7 @@ services:
       # the password comes from PGPASSWORD, so it needs no URL escaping
       DATABASE_URL: postgresql://lanparty@db:5432/lanparty
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      # start password; set your own on /admin/security
+      # start password until the first admin account exists (/admin/security)
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
       TIMEZONE: ${TIMEZONE:-UTC}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-0}

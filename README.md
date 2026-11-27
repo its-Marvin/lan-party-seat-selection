@@ -42,8 +42,8 @@ in one place, instead of in a group chat, a spreadsheet and a PayPal inbox.
   and is archived when it ends.
 - **Themes:** give each event its own look; a retro terminal theme is included, and you can add
   your own (see [THEMES.md](THEMES.md)).
-- **Security area:** change the admin password, see and end admin sessions, void participants'
-  links or log them out, adjust the rate limits, and a list of checks (HTTPS, proxy settings,
+- **Security area:** an account for each admin (own name and password), see and end admin
+  sessions, void participants' links or log them out, adjust the rate limits, and a list of checks (HTTPS, proxy settings,
   event codes, mail encryption, failed logins).
 - **Audit log:** every admin action is recorded with the admin's name, so a changed PayPal
   address or a confirmed payment can always be traced.
@@ -84,7 +84,9 @@ export ADMIN_PASSWORD='choose-a-strong-password'   # at least 12 characters
 ```
 
 Open <http://127.0.0.1:5000> for the public page and <http://127.0.0.1:5000/admin> for the admin area.
-For a real event, use [Docker](#docker) instead. To get started, log in as admin, fill in the event details, the PayPal address and the amount,
+For a real event, use [Docker](#docker) instead. To get started, log in as admin with any name and
+`ADMIN_PASSWORD`, create your own admin account under *Security* (after that, everyone logs in with
+their own account), then fill in the event details, the PayPal address and the amount,
 arrange the seat layout, and **set an event code**. Until there is a code, registration is closed.
 The first event is created automatically and is open straight away; see [Events](#events) for
 planning the next one.
@@ -98,7 +100,7 @@ the server; the ones marked ⚙ are only the **defaults** of settings that admin
 
 | Variable                | Default                      | Purpose |
 |-------------------------|------------------------------|---------|
-| `ADMIN_PASSWORD`        | *(empty → admin disabled)*   | Start password for `/admin`. Must be at least 12 characters, or the app refuses to start. Changing it logs out all admins. Once an admin sets a password on `/admin/security`, that one is used instead (`python -m lanparty.manage reset-admin-password` goes back to this one). |
+| `ADMIN_PASSWORD`        | *(empty → admin disabled)*   | Start password for `/admin`, used until the first admin account exists (see [Admins](#admins)). Must be at least 12 characters, or the app refuses to start. Changing it logs out all start-mode sessions. `python -m lanparty.manage reset-admin-password` deletes all admin accounts, so it works again. |
 | `ALLOW_WEAK_ADMIN_PASSWORD` | `0`                      | `1` allows a shorter password. **Local development only.** |
 | `DATABASE`              | `instance/lanparty.sqlite3`  | Path to the SQLite file. It is created automatically. |
 | `DATABASE_URL`          | *(empty → SQLite)*           | PostgreSQL connection URL, e.g. `postgresql://lanparty@db:5432/lanparty`. When set, it replaces `DATABASE`. The password can be part of the URL or come from `PGPASSWORD` (libpq's other `PG*` variables work too). The tables are created at startup. |
@@ -298,8 +300,17 @@ browser (`localStorage`). Every theme has both modes.
 `THEMES_DIR`; [THEMES.md](THEMES.md) explains how to build one.
 
 ### Admins
-The admin area has one page per topic; all of them need a login with the admin password and
-the admin's name (it goes into the audit log, so everyone sharing the password stays traceable).
+The admin area has one page per topic; all of them need an admin login.
+
+**Admin accounts:** every admin logs in with their own name and password. As long as no account
+exists (start mode, e.g. right after installing), `ADMIN_PASSWORD` works with any name; use it once
+to create the first account on `/admin/security`. From then on `ADMIN_PASSWORD` no longer works,
+every start-mode session ends, and further admins are added (or removed) there. Names are unique
+regardless of upper/lower case; passwords need at least 12 characters and are stored as scrypt
+hashes. Adding or removing an admin, and changing your own password, need your current password.
+Nobody can remove their own account, so there is always at least one. If nobody can log in any
+more, `python -m lanparty.manage reset-admin-password` on the server deletes every account and
+session, and `ADMIN_PASSWORD` works again.
 
 - **`/admin`**: login and an overview of the areas: the current event's numbers, mail status and
   the number of security warnings.
@@ -320,11 +331,11 @@ the admin's name (it goes into the audit log, so everyone sharing the password s
   before the deadline reminders go out (default 48 hours). Shows the mail status, sends a test
   mail, and lists mails that are waiting or failed (with a button to try failed ones again).
 - **`/admin/security`**:
-  - **Checks:** HTTPS and the secure cookie flag, the proxy setting, where the admin password comes
-    from, events without (or with short) event codes, mail encryption and failures, whether the
+  - **Checks:** HTTPS and the secure cookie flag, the proxy setting, start mode or the number of
+    admin accounts (and passwords unchanged for a year), events without (or with short) event codes, mail encryption and failures, whether the
     scheduler runs, failed admin logins and event-code lockouts in the last 24 hours, audit retention.
-  - **Admin password:** change it (needs the current one; every other admin session ends). It is
-    stored as a scrypt hash.
+  - **Admin accounts:** list (last login, created by whom), add, remove; **your password:** change
+    it (your other sessions end, other admins aren't affected).
   - **Admin sessions:** who is logged in, since when, last activity; end single sessions. *Log out
     everywhere* (in the header) ends all of them.
   - **Participants' access** for one event: void unused login links, replace the personal links
@@ -372,8 +383,8 @@ Docker, run it as a service, or every few minutes from cron with `--once`. `--ch
 a pass finished recently (for health checks); the admin pages warn when it isn't running.
 
 **Maintenance:** `python -m lanparty.manage test-mail you@example.com` sends a test mail with the
-saved settings; `python -m lanparty.manage reset-admin-password` forgets the password set on the
-security page, so `ADMIN_PASSWORD` works again.
+saved settings; `python -m lanparty.manage reset-admin-password` deletes every admin account and
+session, so `ADMIN_PASSWORD` works again (start mode).
 
 ## API
 
@@ -397,7 +408,7 @@ All endpoints are under `/api` and use JSON.
 | POST   | `/access` | – | `{code}` → `{token, user}`; personal links can be used again |
 | POST   | `/login/preview` | – | `{code}` → `{user_id, name}`; doesn't use up the code |
 | POST   | `/login` | – | `{code}` → `{token, user}`; uses up the code |
-| POST   | `/admin/login` | – | `{password, name}` (rate-limited; `name` is required, 400 without it) |
+| POST   | `/admin/login` | – | `{name, password}` (rate-limited; `name` is required, 400 without it). With accounts, the name selects the account; one error message for a wrong name or password |
 | POST   | `/admin/logout` | – | |
 | POST   | `/admin/logout-all` | admin | End every admin session |
 | GET    | `/admin/session` | – | `{admin: bool, actor}` |
@@ -419,7 +430,10 @@ All endpoints are under `/api` and use JSON.
 | GET    | `/admin/mail/queue` | admin | Mail status and the mails that weren't sent yet |
 | POST   | `/admin/mail/retry` | admin | Try given-up mails again |
 | POST   | `/admin/mail/test` | admin | `{to}`: send a test mail now; 502 with the server's error if it fails |
-| POST   | `/admin/password` | admin | `{current, new}`: change the admin password; ends the other admin sessions |
+| GET    | `/admin/admins` | admin | Admin accounts (`id`, `name`, `created_at`, `created_by`, `last_login_at`, `current`) and `start_mode` |
+| POST   | `/admin/admins` | admin | `{name, password, current}`: add an admin (your `current` password confirms it); the first one ends start mode and every session |
+| DELETE | `/admin/admins/<id>` | admin | `{current}`: remove another admin and end their sessions |
+| POST   | `/admin/password` | admin | `{current, new}`: change your own password; your other sessions end |
 | GET    | `/admin/sessions` | admin | Admin sessions (`id`, `actor`, times, `current`) and where the password comes from |
 | DELETE | `/admin/sessions/<id>` | admin | End one admin session |
 | POST   | `/admin/participant-access` | admin | `{action: login_links \| personal_links \| devices, resend}` for `?event=`: void login links, replace personal links (and mail new ones), or log out every device → `{count, mailed}` |
@@ -460,8 +474,8 @@ What the app protects against, and how:
 
 | Threat | Protection |
 |--------|------------|
-| Guessing the admin password | At most 5 failed logins per IP and 50 overall per 15 minutes (adjustable on `/admin/security`). While locked, even the right password is refused. Passwords under 12 characters are rejected. A password set in the admin area is stored as a scrypt hash; changing it needs the current one, so a stolen session alone can't lock the admins out. |
-| Stolen or forged admin cookies | Sessions are stored in the database, behind a random `HttpOnly`, `SameSite=Strict` cookie with `Path=/api`. They end after 60 minutes of inactivity or 12 hours at most, on logout, with *Log out everywhere* or *End session* on `/admin/security`, or when the admin password changes. |
+| Guessing admin passwords | At most 5 failed logins per IP and 50 overall per 15 minutes (adjustable on `/admin/security`). While locked, even the right password is refused. Passwords under 12 characters are rejected. Each admin has an account with a scrypt-hashed password; a wrong name and a wrong password take as long and get the same answer. Adding or removing admins and changing a password need the current password (failures count as failed logins), so a stolen session alone can't take over the admin area. |
+| Stolen or forged admin cookies | Sessions are stored in the database, behind a random `HttpOnly`, `SameSite=Strict` cookie with `Path=/api`. They end after 60 minutes of inactivity or 12 hours at most, on logout, with *Log out everywhere* or *End session* on `/admin/security`, or when that admin's password changes or the account is removed. |
 | Admin actions nobody can trace (e.g. a changed PayPal address) | The audit log records the admin's name for each action. |
 | One person reserving every seat | Registrations limited per IP, at most 4 unpaid reservations per IP, unpaid reservations expire. Registration requires the event code. |
 | Dodging per-IP limits with IPv6 | Every IPv6 user can choose among the 2^64 addresses of their `/64` network, so IPv6 clients are counted per `/64`. IPv4-mapped addresses count as the IPv4 address. |
@@ -492,7 +506,7 @@ Known limitations:
   IPv6 networks) can still reserve several seats. Those seats are released when the reservation
   time runs out, and the admin sees all reservations. The event code is 4 to 6 characters; use
   6 for events you announce publicly.
-- Everyone shares one admin password, and there is no second factor. The overall limit on failed
+- Admin accounts have no second factor. The overall limit on failed
   admin logins means that someone with many IP addresses can lock the admins out for 15 minutes.
 - Participant device tokens stay valid until the participant logs out, is removed, or the event
   ends (tokens only work for the active event).
@@ -545,7 +559,7 @@ The app is then at <http://127.0.0.1:8000>. Settings in `.env`:
 | Variable | Default | Purpose |
 |---|---|---|
 | `LANPARTY_VERSION` | `latest` | Image tag: `latest` (the newest release), or a release such as `1.2.3`, `1.2` or `1`. |
-| `ADMIN_PASSWORD` | *(required)* | Start admin password, at least 12 characters. Set your own on `/admin/security` afterwards. |
+| `ADMIN_PASSWORD` | *(required)* | Start admin password (at least 12 characters), used until you create the first admin account on `/admin/security`. |
 | `POSTGRES_PASSWORD` | *(required)* | Password of the database user. The database is only reachable inside the compose network; its port is not published. |
 | `TIMEZONE` | `UTC` | Time zone of the event dates. Containers run in UTC, so set this (e.g. `Europe/Berlin`). |
 | `BIND_ADDRESS` / `PORT` | `127.0.0.1` / `8000` | Where the app listens on the host. The default only lets a reverse proxy on the same machine in; use `0.0.0.0` to serve the local network directly. |
