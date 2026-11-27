@@ -117,7 +117,15 @@ def test_compose_pulls_the_published_image_and_the_override_builds_it():
     # the workflow publishes to the image the compose file pulls
     workflow = (ROOT / ".github/workflows/docker.yml").read_text()
     assert "ghcr.io/${GITHUB_REPOSITORY,,}" in workflow
-    assert "needs: tests" in workflow and "push: ${{ github.event_name == 'push' }}" in workflow
+    # images are published only for releases, after the tests, from commits on main
+    assert "release:\n    types: [published]" in workflow
+    assert "push: ${{ github.event_name == 'release' }}" in workflow
+    assert "needs: tests" in workflow and "needs: on-main" in workflow
+    assert "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main" in workflow
+    assert "branches: [main]" not in workflow  # a push to main publishes nothing
+    # :latest only for GitHub's "Latest" release, never metadata-action's automatic one
+    assert "latest=${{ steps.latest.outputs.value == 'true' }}" in workflow
+    assert "releases/latest" in workflow
 
 
 def test_image_runs_unprivileged_and_leaves_private_files_out():
@@ -160,6 +168,17 @@ def test_registration_rejects_nul_characters(coded_app, field):
     data[field] = data[field][:3] + "\x00" + data[field][3:]
     resp = coded_app.test_client().post("/api/register", json=data)
     assert resp.status_code == 400 and "NUL" in resp.get_json()["error"]
+
+
+@pytest.mark.parametrize("inner", ['""', '"\\u0000"'])
+def test_deeply_nested_input_is_a_validation_error_not_a_crash(coded_app, inner):
+    """json.loads accepts 600 levels; the NUL scan must cope with them too."""
+    from tests.helpers import EVENT_CODE
+
+    deep = "[" * 600 + inner + "]" * 600
+    body = f'{{"name": {deep}, "email": "ada@example.com", "event_code": "{EVENT_CODE}"}}'
+    resp = coded_app.test_client().post("/api/register", data=body, content_type="application/json")
+    assert resp.status_code == 400
 
 
 def test_admin_input_rejects_nested_nul_characters(coded_app):

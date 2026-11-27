@@ -60,12 +60,19 @@ def _finite_float(text):
 
 
 def _contains_nul(value) -> bool:
-    if isinstance(value, str):
-        return "\x00" in value
-    if isinstance(value, dict):
-        return any(_contains_nul(k) or _contains_nul(v) for k, v in value.items())
-    if isinstance(value, list):
-        return any(_contains_nul(v) for v in value)
+    """Any string (or key) with a NUL, at any depth. Iterative: json.loads accepts
+    nesting deeper than Python's recursion limit allows a recursive walk."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if "\x00" in item:
+                return True
+        elif isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
     return False
 
 

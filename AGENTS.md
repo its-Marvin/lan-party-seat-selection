@@ -26,9 +26,12 @@ Requirements from the owner: **no Java**, tests and README required.
   `docker-compose.yml` (pulls `ghcr.io/its-marvin/lan-party-seat-selection:${LANPARTY_VERSION}`
   + postgres:17-alpine, secrets from `.env`, see `.env.example`). `docker-compose.build.yml` is the
   override that builds from the checkout instead.
-- CI: `.github/workflows/tests.yml` (push to any branch except main; SQLite on 3.11/3.13 and
-  Postgres 17) and `docker.yml` (PRs: build only; main and `v*` tags: calls tests.yml, then pushes
-  a multi-arch image to GHCR). Lint workflows with
+- CI: `.github/workflows/tests.yml` (every branch push; SQLite on 3.11/3.13 and Postgres 17) and
+  `docker.yml` (PRs: build only; a **published release** whose tag is on `main`: checks that,
+  calls tests.yml, then pushes a multi-arch image `:X.Y.Z`, `:X.Y`, `:X` to GHCR, and `:latest` only
+  when GitHub's `releases/latest` is this release).
+  The owner wants images published **only on releases**, never on pushes to main. Keep actions
+  on their Node 24 majors (Node 20 actions trigger deprecation warnings). Lint workflows with
   `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest`. The repo is public; after
   the first publish, check that the GHCR package is public too (new packages can start private).
 - The venv is at `.venv`. There is no system pip, and Node is not installed.

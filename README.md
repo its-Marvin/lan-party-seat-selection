@@ -384,7 +384,7 @@ The app is then at <http://127.0.0.1:8000>. Settings in `.env`:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LANPARTY_VERSION` | `latest` | Image tag: `latest` (the `main` branch), a release such as `1.2.3` or `1.2`, or `sha-<commit>`. |
+| `LANPARTY_VERSION` | `latest` | Image tag: `latest` (the newest release), or a release such as `1.2.3`, `1.2` or `1`. |
 | `ADMIN_PASSWORD` | *(required)* | Admin password, at least 12 characters. |
 | `POSTGRES_PASSWORD` | *(required)* | Password of the database user. The database is only reachable inside the compose network; its port is not published. |
 | `TIMEZONE` | `UTC` | Time zone of the event dates. Containers run in UTC, so set this (e.g. `Europe/Berlin`). |
@@ -408,9 +408,13 @@ Other variables from [Configuration](#configuration) can be added to the `app` s
 
 GitHub Actions run the tests on every push, on SQLite (Python 3.11 and 3.13) and on PostgreSQL 17
 (`.github/workflows/tests.yml`). `.github/workflows/docker.yml` builds the image for pull requests
-without publishing it. On `main` and on `v*` tags it runs the tests first and then publishes the
-image to GHCR. Tagging `v1.2.3` publishes `:1.2.3` and `:1.2`; `main` publishes `:latest` and
-`:sha-<commit>`.
+without publishing it.
+
+A new image is published only when a **GitHub release** is published, and only if its tag points to
+a commit on `main`. The workflow runs the tests first. A release `v1.2.3` publishes `:1.2.3`,
+`:1.2` and `:1`, plus `:latest` if GitHub marks it as the latest release (so a fix for an older
+version line never moves `:latest` backwards). A pre-release publishes only its own tag. Pushes to `main` publish
+nothing.
 
 ## Deployment notes
 

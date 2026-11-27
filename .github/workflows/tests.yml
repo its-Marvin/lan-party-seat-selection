@@ -1,10 +1,10 @@
 name: Tests
 
-# Every push is tested once: branches here, main (and v* tags) by the Docker
-# workflow, which calls this one before it publishes an image.
+# Every push to a branch (main included). The Docker workflow also calls this
+# before it publishes a release image.
 on:
   push:
-    branches-ignore: [main]
+    branches: ["**"]
   workflow_call:
 
 permissions:
@@ -19,8 +19,8 @@ jobs:
       matrix:
         python: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -47,8 +47,8 @@ jobs:
     env:
       LANPARTY_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/lanparty_test
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
