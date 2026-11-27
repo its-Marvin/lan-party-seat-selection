@@ -158,6 +158,7 @@ I18N.add("en-US", {
   "admin.message.body": "Message (plain text; a blank line starts a new paragraph)",
   "admin.message.confirm.one": "Send this message to {count} person ({group}) of \"{event}\"?",
   "admin.message.confirm.other": "Send this message to {count} people ({group}) of \"{event}\"?",
+  "admin.message.eventChanged": "Another event was opened meanwhile, so nothing was sent. Check the message and send it again.",
   "admin.message.help": "Sends a mail in the event's theme. Only confirmed email addresses get it; each participant gets it in their language frame, with your text as written.",
   "admin.message.legend": "New message",
   "admin.message.nobody": "Nobody in this group has a confirmed email address.",

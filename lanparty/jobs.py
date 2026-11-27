@@ -64,9 +64,9 @@ def send_payment_reminders(event_id: int) -> int:
 def run_once(app) -> dict:
     with app.app_context():
         result = {"reminders": 0}
+        api.expire_unconfirmed()           # every event
         event_id = ev.active_id()
         if event_id is not None:
-            api.expire_unconfirmed(event_id)
             api.expire_reservations(event_id)
             result["reminders"] = send_payment_reminders(event_id)
         result["sent"] = mail.deliver_pending(limit=500)
@@ -107,6 +107,8 @@ def main(argv=None) -> int:
                 log.info("pass: %s", result)
         except Exception:  # noqa: BLE001 - keep running; the next pass retries
             log.exception("Scheduled jobs failed")
+            if args.once:
+                return 1               # a one-shot run (cron, an operator) must see the failure
         if args.once:
             return 0
         time.sleep(max(args.interval, 1))

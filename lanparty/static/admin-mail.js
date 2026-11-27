@@ -42,7 +42,8 @@ async function loadQueue() {
   $("queue").replaceChildren(...(rows.length ? rows
     : [el("tr", {}, el("td", { colspan: 4, class: "muted" }, t("admin.mailPage.empty")))]));
   labelRows($("queue"));
-  $("retry-queue").disabled = !pending.some((m) => m.given_up);
+  // the list shows only the newest mails; the status counts every given-up one
+  $("retry-queue").disabled = !(status.failed > 0);
 }
 
 /** Phone layout: each cell shows its column name (table.stack). */

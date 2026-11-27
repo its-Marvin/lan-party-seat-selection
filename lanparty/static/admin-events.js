@@ -461,16 +461,23 @@ async function onSendMessage(event) {
   const msg = $("message-msg");
   showMessage(msg, "");
   const target = currentEvent;
+  const targetName = currentEventData()?.event_name ?? "";
   const audience = f.audience.value;
   const path = `/admin/messages?event=${encodeURIComponent(target)}`;
   try {
     const { recipients } = await api("POST", path, { audience, dry_run: true });
+    // the confirmation must name the event the message goes to: if another one was
+    // opened while the count loaded, stop instead of asking about the wrong event
+    if (currentEvent !== target) {
+      showMessage(msg, t("admin.message.eventChanged"), "info");
+      return;
+    }
     if (!recipients) {
       showMessage(msg, t("admin.message.nobody"), "info");
       return;
     }
     const group = t(`admin.message.${audience}`);
-    if (!confirm(t("admin.message.confirm", { count: recipients, group, event: currentEventData()?.event_name ?? "" }))) return;
+    if (!confirm(t("admin.message.confirm", { count: recipients, group, event: targetName }))) return;
     f.querySelector("button").disabled = true;
     const result = await api("POST", path, { audience, subject: f.subject.value, body: f.body.value });
     f.reset();

@@ -158,6 +158,7 @@ I18N.add("de-DE", {
   "admin.message.body": "Nachricht (reiner Text; eine Leerzeile beginnt einen neuen Absatz)",
   "admin.message.confirm.one": "Diese Nachricht an {count} Person ({group}) von „{event}“ senden?",
   "admin.message.confirm.other": "Diese Nachricht an {count} Personen ({group}) von „{event}“ senden?",
+  "admin.message.eventChanged": "Inzwischen wurde ein anderes Event geöffnet, deshalb wurde nichts gesendet. Prüfe die Nachricht und sende sie noch einmal.",
   "admin.message.help": "Verschickt eine Mail im Theme des Events. Nur bestätigte E-Mail-Adressen bekommen sie; der Rahmen ist in der Sprache der jeweiligen Person, dein Text bleibt, wie du ihn schreibst.",
   "admin.message.legend": "Neue Nachricht",
   "admin.message.nobody": "In dieser Gruppe hat niemand eine bestätigte E-Mail-Adresse.",

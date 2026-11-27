@@ -47,7 +47,7 @@ Requirements from the owner: **no Java**, tests and README required.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest -q                                   # ~410 tests, ~9 s
+.venv/bin/pytest -q                                   # ~450 tests, ~15 s
 # the same suite on PostgreSQL (~30 s; a schema per test, sqlite_only tests skipped):
 docker run -d --rm --name lanparty-pg-test -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:17-alpine
 LANPARTY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/pytest -q
@@ -72,10 +72,10 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/events.py` | Events and their status from dates (`local_now()` in `TIMEZONE`), `active_id()` (cached in `g`), `default_admin_id()`, overlap check, `create()`/`delete()` (no commit) |
 | `lanparty/settings.py` | Per-event settings: `DEFAULTS`, `load(event_id)`, `validate_update(data, event_id)`, `save(values, event_id)` (does **not** commit) |
 | `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `load(event_id)`, `save(layout, moves, event_id)` (no commit) |
-| `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions, admin accounts (`admin_users`, scrypt; `authenticate_admin()`, `check_session_password()`, `session_tag()`), start mode with `ADMIN_PASSWORD` while no account exists |
+| `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions, admin accounts (`admin_users`, scrypt; `authenticate_admin()`, `check_session_password()`, `session_still_valid()`, `session_tag()`), start mode with `ADMIN_PASSWORD` while no account exists |
 | `lanparty/appsettings.py` | App-wide settings edited on `/admin/settings`, `/admin/mail`, `/admin/security`: `FIELDS` (section, type, env default), `value(key)`, `config_value(CONFIG_KEY)`, `validate_update()`, `save()` (no commit). Stored as `cfg.<key>` in `settings`; unset = `app.config` (env) default |
 | `lanparty/admin_api.py` | Endpoints of the admin areas (config sections, overview, mail queue/test/retry, admin accounts and own password, sessions, participant access, security checks); adds routes to the `/api` blueprint |
-| `lanparty/mail.py` | Mail core: `enabled()`/`problems()`, `Mail` blocks → text + HTML in the event theme's light tokens (`palette()`), outbox `enqueue()` (inside the write transaction), `deliver_pending()` (claims rows), `flush_soon()` (background thread; synchronous under TESTING), `transmit()` (SMTP, or `MAIL_BACKEND` console/memory) |
+| `lanparty/mail.py` | Mail core: `enabled()`/`problems()`, `Mail` blocks → text + HTML in the event theme's light tokens (`palette()`), outbox `enqueue()` (inside the write transaction), `deliver_pending()` (claims rows; skips test mails), `send_test()`, `flush_soon()` (background thread; synchronous under TESTING), `transmit()` (SMTP, or `MAIL_BACKEND` console/memory) |
 | `lanparty/notify.py` | The wording of each mail (`tr_in(lang, …)`, participant's `users.lang`): confirmation, payment request/reminder/confirmed, new personal link, admin message, test mail |
 | `lanparty/jobs.py` | Scheduler `python -m lanparty.jobs [--once] [--check]`: expiry, reminders, mail retries, pruning, heartbeat (`_jobs_last_run`) |
 | `lanparty/manage.py` | `python -m lanparty.manage reset-admin-password \| test-mail ADDRESS` |
@@ -91,7 +91,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
 | `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
 | `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
-| `tests/` | `test_mail.py` (mail flows, admin areas, scheduler; mails land in `app.extensions["sent_mail"]`), `test_owasp.py` (regressions from the OWASP Top 10 review), `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_database` (adapter, schema parity, portable SQL, Docker files), `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
+| `tests/` | `test_mail.py` (mail flows, admin areas, scheduler; mails land in `app.extensions["sent_mail"]`), `test_owasp.py` (regressions from the OWASP Top 10 review), `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_database` (adapter, schema parity, portable SQL, Docker files), `test_admins` (accounts, start mode, races), `test_review_pr2`…`test_review_pr4_round2`, `test_review_pr14` (regression tests per Copilot review) |
 
 ## Rules that must not break
 
@@ -148,8 +148,10 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   (`settingsEventId`, `LayoutEditor.eventId()`), and saves go there, never to `currentEvent`.
   While another event loads, the form and layout saving are locked; a failed load keeps them
   locked. An event deleted elsewhere triggers a normal (unsaved-work-aware) switch, once.
-- Background polls send `X-Background: 1` (`api(…, {background: true})`); `admin_required` then
-  doesn't refresh the session, so the idle timeout still works with an open tab.
+- Background polls send `X-Background: 1` (`api(…, {background: true})`); `admin_required` and
+  `/admin/session` then don't refresh the session, so the idle timeout still works with an open
+  tab. `AdminShell` polls `/admin/session` that way every 30 s and hides the admin data when the
+  session is gone (form edits stay).
 - Migration: an old single-event DB becomes event 1 with `registration_opens` = migration time.
   The `users` table is rebuilt (with `PRAGMA foreign_keys = OFF` around the transaction).
 
@@ -183,6 +185,13 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   the first account only accounts work. Names are unique by `casefold()` (`name_key`). Adding or
   removing admins and changing a password re-check the acting admin's password
   (`_reauthenticate`, counted in `admin_login_fail`). Nobody removes their own account.
+- Password checks (scrypt) run **before** the write lock, so whatever follows must re-check
+  under the lock that the verified credential is still current: `authenticate_admin()` and
+  `check_session_password()` return the verified credential's tag; `create_admin_session()` /
+  `insert_admin_session()` issue a session only while it matches `session_tag()`, and account
+  changes call `_still_authorized(verified)` inside their `write_transaction()` (401 otherwise).
+  The first account is decided under the lock and ends only start-mode sessions. Hash new
+  passwords (`hash_password()`) before taking the lock.
   `manage reset-admin-password` deletes all accounts and sessions.
   Passwords under 12 characters are refused unless `ALLOW_WEAK_ADMIN_PASSWORD=1` or TESTING.
 - Participants use device tokens (`user_tokens`, stored hashed). `/api/me/logout` deletes this
@@ -210,16 +219,24 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Queue mails with the `notify.*` functions **inside** the write transaction of the change they
   report, then call `mail.flush_soon()` after it. Never talk to the mail server while holding the
   write lock (`deliver_pending()` commits its claim before sending).
+- Test mails (`kind = 'test'`) are never sent by the queue: `notify.test_mail()` returns the outbox
+  id, `mail.send_test(id)` sends exactly that mail, reports its own error and deletes it.
 - Registrations with mail need confirmation: `confirm_until` set, `email_confirmed_at` NULL
   (`pending_confirmation()`). Their seat is held, but `reserved_at` stays NULL until confirmation,
-  which starts the payment window. Expired ones are deleted (`expire_unconfirmed()`). A confirmed
+  which starts the payment window. Expired ones are deleted in **every** event, also one that has
+  ended (`expire_unconfirmed()`, request hook and scheduler). A confirmed
   payment also confirms the address.
 - A new payment window (`reserved_at` changed in `assign_seat`, or confirmation) mails the payment
   request; reminders go once per window (`reminder_sent_at < reserved_at`).
 - Personal links (`users.access_code_hash`) are reusable until the event ends; replacing them
   (logout-others, admin reset) mails a new one when mail is on.
 - Runtime settings with an env default: read them through `appsettings.value()` /
-  `api.conf()` (which goes through `config_value()`), not `current_app.config`.
+  `api.conf()` (which goes through `config_value()`), not `current_app.config`. The time zone is
+  `events.timezone_name()`, also for dates in mails (`mail.utc_to_local(text, plus)` adds a
+  duration in UTC before converting, so deadlines across a DST change stay right).
+- `appsettings` caches stored values in `g` per request. Code that validates and saves them
+  inside a write transaction calls `appsettings.clear_cache()` first. Secrets are stored
+  verbatim (never stripped); SMTP IPv6 hosts are stored without brackets.
 - Secrets in appsettings are write-only: `Field.public()` never returns them, the audit says
   "(changed)". Admin passwords live in `admin_users` (scrypt), never in appsettings.
 - Theme values reach mails only via `mail.palette()`, which drops anything but plain values.

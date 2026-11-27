@@ -12,6 +12,8 @@
 
 const $ = (id) => document.getElementById(id);
 
+const SESSION_POLL_MS = 30000;
+
 const AdminShell = {
   onSession: null,
   unsaved: () => false,
@@ -71,6 +73,16 @@ const AdminShell = {
       if (this.unsaved()) { e.preventDefault(); e.returnValue = ""; }
     });
     this.check().catch((err) => showMessage($("login-msg"), err.message));
+    // An unattended page must not keep showing admin data after the session ended
+    // (idle timeout, logout elsewhere, password change). The poll is marked as
+    // background, so it doesn't keep the session alive; form edits stay as they are.
+    setInterval(() => this.poll().catch(() => {}), SESSION_POLL_MS);
+  },
+
+  async poll() {
+    if ($("admin-area").hidden) return;
+    const { admin } = await api("GET", "/admin/session", undefined, { background: true });
+    if (!admin) await this.check();
   },
 };
 

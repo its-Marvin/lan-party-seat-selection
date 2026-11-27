@@ -213,12 +213,12 @@ def is_admin_request() -> bool:
 
 @bp.before_request
 def release_expired_reservations():
-    # only the active event's reservations run out; archived events stay as they ended
+    # unconfirmed addresses run out everywhere; reservations only in the active event
+    # (archived events stay as they ended)
+    expire_unconfirmed()
     event_id = active_event_id()
-    if event_id is None:
-        return
-    expire_unconfirmed(event_id)
-    expire_reservations(event_id)
+    if event_id is not None:
+        expire_reservations(event_id)
 
 
 def expire_reservations(event_id: int) -> None:
@@ -252,20 +252,21 @@ def expire_reservations(event_id: int) -> None:
 
 
 UNCONFIRMED_EXPIRED_SQL = (
-    "SELECT id, name, email, seat FROM users WHERE event_id = ? AND paid = 0 "
+    "SELECT id, event_id, name, email, seat FROM users WHERE paid = 0 "
     "AND email_confirmed_at IS NULL AND confirm_until IS NOT NULL AND confirm_until <= ?")
 
 
-def expire_unconfirmed(event_id: int) -> None:
-    """Delete registrations whose email address wasn't confirmed in time; their
-    seats become free and the address can register again (also run by jobs.py)."""
-    if not get_db().execute(UNCONFIRMED_EXPIRED_SQL, (event_id, utc_now())).fetchone():
+def expire_unconfirmed() -> None:
+    """Delete registrations whose email address wasn't confirmed in time, in every
+    event (one that ended before the deadline too); their seats become free and the
+    address can register again. Also run by jobs.py."""
+    if not get_db().execute(UNCONFIRMED_EXPIRED_SQL + " LIMIT 1", (utc_now(),)).fetchone():
         return
     with write_transaction() as db:
-        for r in db.execute(UNCONFIRMED_EXPIRED_SQL, (event_id, utc_now())).fetchall():
+        for r in db.execute(UNCONFIRMED_EXPIRED_SQL, (utc_now(),)).fetchall():
             db.execute("DELETE FROM users WHERE id = ? AND email_confirmed_at IS NULL AND paid = 0", (r["id"],))
             sec.record_audit("system", "registration.unconfirmed_expired", user_id=r["id"], name=r["name"],
-                             email=r["email"], seat=r["seat"], event_id=event_id)
+                             email=r["email"], seat=r["seat"], event_id=r["event_id"])
 
 
 # --- serialisation -------------------------------------------------------
@@ -751,6 +752,9 @@ def confirm_email():
         raise ApiError(400, tr(CONFIRM_INVALID))
     token = None
     with write_transaction() as db:
+        event = cfg.load(event_id)
+        if ev.status(event) != "active":     # the event ended while this request waited
+            raise ApiError(400, tr(CONFIRM_INVALID))
         user = db.execute(
             "SELECT * FROM users WHERE confirm_code_hash = ? AND event_id = ? AND email_confirmed_at IS NULL "
             "AND confirm_until > ?", (sec.sha256(code), event_id, utc_now())).fetchone()
@@ -764,7 +768,7 @@ def confirm_email():
             (now, now, user["id"]))
         user = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
         if user["seat"] and not user["paid"]:
-            notify.payment_request(user, cfg.load(event_id))
+            notify.payment_request(user, event)
         if data.get("login") is True:
             token = issue_token(user["id"])
     mail.flush_soon()
@@ -822,7 +826,8 @@ def access_login():
     code = json_body().get("code")
     with write_transaction():
         row = lookup_access_code(code)   # under the lock: a concurrent logout-others replaces it
-        if row is None:
+        # the per-request event cache predates the lock: the event may have ended since
+        if row is None or ev.status(cfg.load(row["event_id"])) != "active":
             raise ApiError(400, tr(ACCESS_INVALID))
         token = issue_token(row["id"])
     return jsonify(token=token, user=user_dict(row))
@@ -944,10 +949,15 @@ def admin_login():
         sec.audit("anonymous", "admin.login_failed", network=network, name=name)
         # the same answer for an unknown name and a wrong password
         raise ApiError(401, tr("Wrong name or password."))
+    name, admin_id, verified = login  # an account's name as stored (its spelling)
+    # issued only if that password is still the current one (another worker may have
+    # changed it since it was checked; scrypt runs outside the lock)
+    token = sec.create_admin_session(name, admin_id, verified)
+    if token is None:
+        sec.audit("anonymous", "admin.login_failed", network=network, name=name, reason="password changed")
+        raise ApiError(401, tr("Wrong name or password."))
     sec.release(ip_attempt)
     sec.release(global_attempt)
-    name, admin_id = login            # an account's name as stored (its spelling)
-    token = sec.create_admin_session(name, admin_id)
     sec.audit(name, "admin.login", network=network, mode="account" if admin_id else "start")
     sec.prune_audit_log()
     resp = jsonify(ok=True, actor=name)
@@ -978,7 +988,10 @@ def admin_logout_all():
 
 @bp.get("/admin/session")
 def admin_session():
-    session = sec.current_admin_session() if sec.admin_enabled() else None
+    # the admin pages poll this (X-Background: 1) to notice an ended session; that
+    # must not count as activity, or an open tab would never time out
+    refresh = request.headers.get("X-Background") != "1"
+    session = sec.current_admin_session(refresh=refresh) if sec.admin_enabled() else None
     return jsonify(admin=session is not None, actor=session["actor"] if session else None)
 
 

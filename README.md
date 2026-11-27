@@ -379,7 +379,8 @@ and is never sent back to the browser.
 **Scheduler:** `python -m lanparty.jobs` runs once a minute: it sends payment reminders, retries
 failed mails, deletes unconfirmed registrations and expired reservations even when nobody visits
 the site, and cleans up old mails and audit entries. In Docker it is the `scheduler` service. Without
-Docker, run it as a service, or every few minutes from cron with `--once`. `--check` exits with 0 if
+Docker, run it as a service, or every few minutes from cron with `--once` (which exits with 1 if the
+pass failed). `--check` exits with 0 if
 a pass finished recently (for health checks); the admin pages warn when it isn't running.
 
 **Maintenance:** `python -m lanparty.manage test-mail you@example.com` sends a test mail with the

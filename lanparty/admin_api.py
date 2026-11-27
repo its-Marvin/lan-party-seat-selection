@@ -58,6 +58,8 @@ def admin_put_config(name):
     data = json_body()
     try:
         with write_transaction():
+            # validate against what is stored now, not what this request read before the lock
+            appsettings.clear_cache()
             changes = appsettings.save(appsettings.validate_update(name, data))
             if changes:
                 sec.record_audit(actor(), "config.changed", section=name, **changes)
@@ -147,35 +149,39 @@ def admin_mail_test():
     enforce_limit("mail_test", "*", 20, 3600, tr("Too many test mails."))
     event_id = ev.active_id() or ev.default_admin_id()
     with write_transaction():
-        notify.test_mail(to, cfg.load(event_id))
+        mail_id = notify.test_mail(to, cfg.load(event_id))
         sec.record_audit(actor(), "mail.test_sent", to=to)
-    db = get_db()
-    row = db.execute("SELECT id FROM mail_outbox WHERE kind = 'test' ORDER BY id DESC LIMIT 1").fetchone()
-    mail.deliver_pending()
-    result = db.execute("SELECT sent_at, last_error FROM mail_outbox WHERE id = ?", (row["id"],)).fetchone()
-    # a test mail is not retried: delete it either way
-    db.execute("DELETE FROM mail_outbox WHERE id = ?", (row["id"],))
-    db.commit()
-    if result["sent_at"] is None:
-        raise ApiError(502, tr("Sending failed: {error}", error=result["last_error"] or "?"))
+    error = mail.send_test(mail_id)       # this mail only, never retried
+    if error is not None:
+        raise ApiError(502, tr("Sending failed: {error}", error=error))
     return jsonify(ok=True)
 
 
 # --- security (/admin/security) -----------------------------------------------------
 
-def _reauthenticate(password) -> None:
+def _reauthenticate(password) -> str:
     """Sensitive changes need the acting admin's password again (a stolen session
-    alone isn't enough); failures count like failed logins."""
+    alone isn't enough); failures count like failed logins. Returns the verified
+    credential's tag: pass it to ``_still_authorized()`` inside the write transaction."""
     key = sec.ip_hash()
     wait, attempt = sec.consume("admin_login_fail", key, appsettings.value("admin_login_max_per_ip"),
                                 appsettings.value("admin_login_window_minutes") * 60)
     if wait:
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
-    if not sec.check_session_password(g.admin, str(password or "")):
+    verified = sec.check_session_password(g.admin, str(password or ""))
+    if verified is None:
         sec.audit(actor(), "admin.reauth_failed", network=sec.anonymized_ip())
         raise ApiError(403, tr("Your current password is wrong."))
     sec.release(attempt)
+    return verified
+
+
+def _still_authorized(verified: str) -> None:
+    """Inside the write transaction: the session and the password checked before the
+    lock must still be current (another admin may have changed or removed them)."""
+    if not sec.session_still_valid(g.admin, verified):
+        raise ApiError(401, tr("Admin login required."))
 
 
 def _check_new_password(password, name: str) -> str:
@@ -210,20 +216,22 @@ def admin_create_admin():
     from .api import clean_actor_name
 
     data = json_body()
-    _reauthenticate(data.get("current"))
+    verified = _reauthenticate(data.get("current"))
     name = clean_actor_name(data.get("name"))
     if len(name) < 2:
         raise ApiError(400, tr("The name must be between 2 and 40 characters."))
-    password = _check_new_password(data.get("password"), name)
-    first = not sec.accounts_exist()
+    password_hash = sec.hash_password(_check_new_password(data.get("password"), name))  # before the lock
     try:
-        with write_transaction():
-            admin_id = sec.create_admin_account(name, password, actor())
+        with write_transaction() as db:
+            _still_authorized(verified)     # e.g. a parallel request created the first account
+            first = not sec.accounts_exist()
+            admin_id = sec.create_admin_account(name, password_hash, actor())
+            if first:
+                # start mode is over: its sessions end, everyone logs in with an account
+                db.execute("DELETE FROM admin_sessions WHERE admin_id IS NULL")
             sec.record_audit(actor(), "admin.account_created", name=name, admin_id=admin_id, first=first)
     except IntegrityError:
         raise ApiError(409, tr("There already is an admin called {name}.", name=name)) from None
-    if first:
-        sec.end_all_admin_sessions()     # start-mode sessions are over; log in with an account
     return jsonify(id=admin_id, name=name, start_mode_ended=first), 201
 
 
@@ -232,10 +240,12 @@ def admin_create_admin():
 def admin_remove_admin(admin_id):
     """Remove another admin (their sessions end with it). Nobody removes themselves,
     so there is always at least one account once there was one."""
-    _reauthenticate(json_body().get("current"))
+    verified = _reauthenticate(json_body().get("current"))
     if admin_id == g.admin["admin_id"]:
         raise ApiError(409, tr("You can't remove your own account."))
     with write_transaction() as db:
+        # two admins removing each other: the second finds its own account gone
+        _still_authorized(verified)
         row = db.execute("SELECT * FROM admin_users WHERE id = ?", (admin_id,)).fetchone()
         if row is None:
             raise ApiError(404, tr("Not found."))
@@ -253,14 +263,18 @@ def admin_change_password():
     if g.admin["admin_id"] is None:
         raise ApiError(409, tr("Create an admin account first; ADMIN_PASSWORD itself is changed on the server."))
     data = json_body()
-    _reauthenticate(data.get("current"))
+    verified = _reauthenticate(data.get("current"))
     new = _check_new_password(data.get("new"), g.admin["actor"])
     if sec.check_session_password(g.admin, new):
         raise ApiError(400, tr("The new password must differ from the current one."))
-    with write_transaction():
-        sec.set_admin_account_password(g.admin["admin_id"], new)
+    new_hash = sec.hash_password(new)       # scrypt outside the lock
+    with write_transaction() as db:
+        _still_authorized(verified)         # a parallel change already replaced it
+        sec.set_admin_account_password(g.admin["admin_id"], new_hash)
+        db.execute("DELETE FROM admin_sessions WHERE token_hash = ?", (g.admin["token_hash"],))
+        # this device stays logged in, with a session for the new password
+        token = sec.insert_admin_session(g.admin["actor"], g.admin["admin_id"], sec.session_tag(g.admin["admin_id"]))
         sec.record_audit(actor(), "admin.password_changed", network=sec.anonymized_ip())
-    token = sec.create_admin_session(g.admin["actor"], g.admin["admin_id"])   # this device stays logged in
     resp = jsonify(ok=True)
     sec.set_admin_cookie(resp, token)
     return resp

@@ -14,7 +14,7 @@ from . import mail
 from . import notify
 from . import security as sec
 from . import settings as cfg
-from .db import get_db, write_transaction
+from .db import write_transaction
 
 
 def reset_admin_password(app) -> int:
@@ -40,11 +40,10 @@ def test_mail(app, recipient: str) -> int:
             return 1
         event_id = ev.active_id() or ev.default_admin_id()
         with write_transaction():
-            notify.test_mail(recipient, cfg.load(event_id))
-        if not mail.deliver_pending():
-            row = get_db().execute("SELECT last_error FROM mail_outbox WHERE kind = 'test' "
-                                   "ORDER BY id DESC LIMIT 1").fetchone()
-            print(f"Sending failed: {row['last_error'] if row else 'unknown error'}")
+            mail_id = notify.test_mail(recipient, cfg.load(event_id))
+        error = mail.send_test(mail_id)
+        if error is not None:
+            print(f"Sending failed: {error}")
             return 1
     print(f"Test mail sent to {recipient}.")
     return 0

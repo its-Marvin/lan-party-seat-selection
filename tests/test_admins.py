@@ -165,3 +165,78 @@ def test_old_session_table_gets_the_admin_column(tmp_path):
     app = create_app({"TESTING": True, "DATABASE": str(path), "ADMIN_PASSWORD": START_PW})
     client, res = login(app, "Setup", START_PW)
     assert res.status_code == 200 and logged_in(client)
+
+
+# --- races: passwords are checked before the write lock (scrypt is slow), so the
+# change that follows must re-check under the lock that they are still current.
+
+def _change_password_meanwhile(monkeypatch, app, func, admin_name, new_password):
+    """Make ``security.<func>`` succeed, then let "another worker" change the password."""
+    from lanparty import security as sec
+    real = getattr(sec, func)
+
+    def checked_then_changed(*args, **kwargs):
+        result = real(*args, **kwargs)
+        db = get_db()
+        db.execute("UPDATE admin_users SET password_hash = ? WHERE name = ?",
+                   (sec.hash_password(new_password), admin_name))
+        db.commit()
+        return result
+    monkeypatch.setattr(sec, func, checked_then_changed)
+
+
+def test_a_login_with_a_password_changed_meanwhile_gets_no_session(app, first, monkeypatch):
+    _change_password_meanwhile(monkeypatch, app, "authenticate_admin", "Alice", "alice password 2")
+    client, res = login(app, "Alice", "alice password 1")
+    assert res.status_code == 401 and not logged_in(client)
+    assert sql(app, "SELECT COUNT(*) AS n FROM admin_sessions WHERE actor = 'Alice' AND created_at > 0")[0]["n"] == 1
+
+
+def test_parallel_password_changes_do_not_overwrite_each_other(app, first, monkeypatch):
+    _change_password_meanwhile(monkeypatch, app, "check_session_password", "Alice", "changed elsewhere 1")
+    res = first.post("/api/admin/password", json={"current": "alice password 1", "new": "alice password 3"})
+    assert res.status_code == 401 and not logged_in(first)
+    monkeypatch.undo()
+    assert login(app, "Alice", "changed elsewhere 1")[1].status_code == 200
+    assert login(app, "Alice", "alice password 3")[1].status_code == 401
+
+
+def test_admins_removing_each_other_leave_one_account(app, first, monkeypatch):
+    assert first.post("/api/admin/admins", json={"name": "Bob", "password": "bob password 12",
+                                                 "current": "alice password 1"}).status_code == 201
+    bob, _ = login(app, "Bob", "bob password 12")
+    ids = {a["name"]: a["id"] for a in first.get("/api/admin/admins").get_json()["admins"]}
+    from lanparty import security as sec
+    real = sec.check_session_password
+
+    def alice_removes_bob_meanwhile(session, password):
+        result = real(session, password)
+        if session["actor"] == "Bob":       # what Alice's request commits on another worker
+            db = get_db()
+            db.execute("DELETE FROM admin_sessions WHERE admin_id = ?", (ids["Bob"],))
+            db.execute("DELETE FROM admin_users WHERE id = ?", (ids["Bob"],))
+            db.commit()
+        return result
+    monkeypatch.setattr(sec, "check_session_password", alice_removes_bob_meanwhile)
+    res = bob.delete(f"/api/admin/admins/{ids['Alice']}", json={"current": "bob password 12"})
+    assert res.status_code == 401
+    assert [r["name"] for r in sql(app, "SELECT name FROM admin_users")] == ["Alice"]
+
+
+def test_parallel_setup_creates_no_second_first_account(app, monkeypatch):
+    two, _ = login(app, "Two", START_PW)
+    from lanparty import security as sec
+    real = sec.check_session_password
+
+    def other_setup_meanwhile(session, password):
+        result = real(session, password)
+        if session["actor"] == "Two":       # "One" creates the first account on another worker
+            db = get_db()
+            sec.create_admin_account("Alice", sec.hash_password("alice password 1"), "One")
+            db.commit()
+        return result
+    monkeypatch.setattr(sec, "check_session_password", other_setup_meanwhile)
+    res = two.post("/api/admin/admins", json={"name": "Mallory", "password": "mallory password", "current": START_PW})
+    assert res.status_code == 401
+    assert [r["name"] for r in sql(app, "SELECT name FROM admin_users")] == ["Alice"]
+

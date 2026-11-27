@@ -27,7 +27,7 @@ def _deadline(user, event: dict) -> datetime | None:
     """End of the payment window, in the event's time zone (None = no deadline)."""
     if not user["reserved_at"] or event["reservation_hours"] <= 0:
         return None
-    return mail.utc_to_local(user["reserved_at"]) + timedelta(hours=event["reservation_hours"])
+    return mail.utc_to_local(user["reserved_at"], timedelta(hours=event["reservation_hours"]))
 
 
 def _event_facts(lang: str, event: dict, seat: str | None) -> list[tuple[str, str]]:
@@ -147,8 +147,8 @@ def message(user, event: dict, subject: str, body: str) -> None:
     mail.enqueue(user, m, "message", event=event)
 
 
-def test_mail(recipient: str, event: dict) -> None:
-    """Sent by ``python -m lanparty.jobs --test-mail``: checks the SMTP settings now."""
+def test_mail(recipient: str, event: dict) -> int:
+    """Queues a test mail (from /admin/mail or ``manage test-mail``); returns its outbox id."""
     lang = "en-US"
     m = mail.Mail(lang, f"Test mail from {event['event_name']}")
     m.p("This is a test mail from the LAN party seat registration. Mail works.")
@@ -156,4 +156,4 @@ def test_mail(recipient: str, event: dict) -> None:
               ("Site address", appsettings.value("public_url")), ("Theme", event.get("theme", "default"))])
     m.button("Open the site", mail.link(), "If the button doesn't work, open this link:")
     fake_user = {"id": None, "email": recipient}
-    mail.enqueue(fake_user, m, "test", event=event)
+    return mail.enqueue(fake_user, m, "test", event=event)    # sent with mail.send_test()

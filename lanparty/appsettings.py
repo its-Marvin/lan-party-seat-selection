@@ -8,6 +8,7 @@ environment). Mail is configured only here.
 """
 
 from dataclasses import dataclass
+import ipaddress
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -147,7 +148,21 @@ def clear_cache() -> None:
 
 URL_RE = re.compile(r"https?://[^\s/?#]+(/[^\s?#]*)?")
 EMAIL_RE = re.compile(r"[^@\s<>\"(),;:]+@[^@\s<>\"(),;:]+\.[^@\s<>\"(),;:]+")
-HOST_RE = re.compile(r"[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\]")
+HOST_RE = re.compile(r"[A-Za-z0-9.-]+")
+
+
+def _smtp_host(text: str) -> str:
+    """A host name or IP address as smtplib wants it: IPv6 without URL-style brackets."""
+    if ":" in text or "[" in text or "]" in text:
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        try:
+            return str(ipaddress.IPv6Address(text))
+        except ValueError:
+            raise ConfigError(tr("The SMTP server must be a host name or an IP address.")) from None
+    if not HOST_RE.fullmatch(text):
+        raise ConfigError(tr("The SMTP server must be a host name or an IP address."))
+    return text
 
 
 def _validate_field(field: Field, raw) -> str:
@@ -163,7 +178,9 @@ def _validate_field(field: Field, raw) -> str:
             raise ConfigError(tr("{field} must be a whole number between {min} and {max}.", field=name,
                                  min=field.minimum, max=field.maximum))
         return str(raw)
-    text = str(raw if raw is not None else "").strip()
+    text = str(raw if raw is not None else "")
+    if field.kind != "secret":         # a password may begin or end with spaces: keep it verbatim
+        text = text.strip()
     if len(text) > field.max_length:
         raise ConfigError(tr("{field} must be at most {limit} characters.", field=name, limit=field.max_length))
     if field.kind == "choice" and text not in field.choices:
@@ -179,8 +196,8 @@ def _validate_field(field: Field, raw) -> str:
             raise ConfigError(tr("Unknown time zone {zone} (use a name like Europe/Berlin).", zone=text)) from None
     if field.key == "mail_from" and text and not EMAIL_RE.fullmatch(text):
         raise ConfigError(tr("The sender address must be an email address."))
-    if field.key == "smtp_host" and text and not HOST_RE.fullmatch(text):
-        raise ConfigError(tr("The SMTP server must be a host name or an IP address."))
+    if field.key == "smtp_host" and text:
+        text = _smtp_host(text)
     return text
 
 

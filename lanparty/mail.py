@@ -11,7 +11,7 @@ The wording of each mail lives in ``notify.py``.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 import html
@@ -218,16 +218,20 @@ def format_local(value: datetime, lang: str) -> str:
     return f"{value:%a, %b} {value.day}, {value.year}, {hour}:{value:%M} {'AM' if value.hour < 12 else 'PM'}"
 
 
-def utc_to_local(text: str) -> datetime:
-    """A stored UTC timestamp (``utc_now()`` format) in the event's time zone."""
-    moment = datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
-    name = current_app.config.get("TIMEZONE", "")
+def utc_to_local(text: str, plus: timedelta = timedelta()) -> datetime:
+    """A stored UTC timestamp (``utc_now()`` format), plus ``plus``, in the event's
+    time zone (the one saved on /admin/settings, like the event clock). ``plus`` is
+    added in UTC, so a window across a DST change ends when the app expires it."""
+    from .events import timezone_name
+
+    moment = datetime.fromisoformat(text).replace(tzinfo=timezone.utc) + plus
+    name = timezone_name()
     return (moment.astimezone(ZoneInfo(name)) if name else moment.astimezone()).replace(tzinfo=None)
 
 
 # --- outbox ---------------------------------------------------------------------------
 
-def enqueue(user, mail: Mail, kind: str, *, event: dict) -> None:
+def enqueue(user, mail: Mail, kind: str, *, event: dict) -> int:
     """Queue ``mail`` for ``user`` (a users row). Call inside the write transaction
     that makes the change the mail reports; it is sent after the commit."""
     from .i18n import tr_in
@@ -239,7 +243,7 @@ def enqueue(user, mail: Mail, kind: str, *, event: dict) -> None:
     footer = tr_in(mail.lang, "You get this mail because you registered for {event} at {url}.",
                    event=event["event_name"], url=appsettings.value("public_url"))
     colors = palette(event.get("theme", "default"))
-    get_db().execute(
+    return get_db().insert(
         "INSERT INTO mail_outbox (user_id, recipient, kind, subject, body_text, body_html) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (user["id"], user["email"], kind, _one_line(mail.subject),
@@ -260,7 +264,7 @@ def deliver_pending(limit: int = 100) -> int:
     db = get_db()
     now = time.time()
     rows = db.execute(
-        "SELECT id FROM mail_outbox WHERE sent_at IS NULL AND attempts < ? "
+        "SELECT id FROM mail_outbox WHERE sent_at IS NULL AND attempts < ? AND kind <> 'test' "
         "AND (claimed_at IS NULL OR claimed_at < ?) ORDER BY id LIMIT ?",
         (MAX_ATTEMPTS, now - RETRY_SECONDS, limit)).fetchall()
     db.commit()
@@ -291,12 +295,31 @@ def deliver_pending(limit: int = 100) -> int:
     return sent
 
 
+def send_test(mail_id: int) -> str | None:
+    """Send the test mail ``mail_id`` right now and delete it; returns the error, or
+    None if the mail server took it. Test mails are never queued for others
+    (``deliver_pending`` skips them), so the result is this mail's own."""
+    db = get_db()
+    row = db.execute("SELECT * FROM mail_outbox WHERE id = ? AND kind = 'test'", (mail_id,)).fetchone()
+    db.commit()
+    error = "?" if row is None else None
+    if row is not None:
+        try:
+            _send(row)
+        except Exception as err:  # noqa: BLE001 - reported to the admin
+            log.warning("Sending the test mail failed: %s", err)
+            error = str(err)[:500] or err.__class__.__name__
+    db.execute("DELETE FROM mail_outbox WHERE id = ?", (mail_id,))
+    db.commit()
+    return error
+
+
 def prune_outbox() -> int:
     """Delete sent (and given-up) mails after KEEP_DAYS: they contain personal data."""
     db = get_db()
     cutoff = utc_now(-24 * KEEP_DAYS)
     count = db.execute(
-        "DELETE FROM mail_outbox WHERE created_at < ? AND (sent_at IS NOT NULL OR attempts >= ?)",
+        "DELETE FROM mail_outbox WHERE created_at < ? AND (sent_at IS NOT NULL OR attempts >= ? OR kind = 'test')",
         (cutoff, MAX_ATTEMPTS)).rowcount
     db.commit()
     return count
@@ -363,16 +386,23 @@ def flush_soon() -> None:
         deliver_pending()
         return
     global _worker
-    _wake.set()
     with _worker_lock:
+        _wake.set()
+        # a worker that is still registered will see the wake: it only retires under
+        # this lock, after finding no wake (see _drain)
         if _worker is None or not _worker.is_alive():
             _worker = threading.Thread(target=_drain, args=(app,), daemon=True, name="mail-sender")
             _worker.start()
 
 
 def _drain(app) -> None:
-    while _wake.is_set():
-        _wake.clear()
+    global _worker
+    while True:
+        with _worker_lock:
+            if not _wake.is_set():
+                _worker = None        # retire; the next flush_soon() starts a new worker
+                return
+            _wake.clear()
         try:
             with app.app_context():
                 deliver_pending()
