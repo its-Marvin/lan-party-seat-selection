@@ -244,6 +244,9 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   session scratchpad, with Chromium cached at `~/.cache/ms-playwright/chromium-1228/`; recreate
   it if it is gone. Test at 1280, 375 and 320 px, in both themes.
 - Keep the README up to date with behaviour and config changes.
+- Update this file **inside each PR**, written as the state after that PR is merged (the
+  "Current state" section, new rules, the code map). Never leave it for a follow-up PR after
+  the merge.
 - README screenshots live in `docs/screenshots/` and show a **fictional** demo event ("Winter LAN
   2027", made-up names, `@example.com`), built in a temp DB via the API and captured with
   Playwright at 1280 px (phone: 375 px, scale 2). Never take them from `instance/dev.sqlite3`.
@@ -251,14 +254,17 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 
 ## Current state (2026-11-27)
 
-- Everything up to #10 (Docker + PostgreSQL, CI, release-only image publishing, required admin
-  name) is merged into `main`: #1 (the app), #2 (mobile layout, paid seat switching,
+- Everything is merged into `main`: #1 (the app), #2 (mobile layout, paid seat switching,
   Auto/Light/Dark, 7-day login links), #3 (several events, `TIMEZONE`), #4 (per-event themes,
-  `THEMES_DIR`, retro theme, `THEMES.md`) and #5 (English/German). After the stack went wrong
-  (see below), #3 and #4 reached `main` through #7, and #5 through #8.
-- `feature/owasp-hardening`: fixes from the OWASP Top 10 review (IPv6 /64 rate limits, audit-log
-  privacy and retention, participant logout, surrogate/mailto input checks, 503 on DB outages,
-  Dependabot, pip-audit, SHA-pinned actions, hardened compose).
+  `THEMES_DIR`, retro theme, `THEMES.md`), #5 (English/German), #10 (Docker + PostgreSQL, CI,
+  release-only image publishing, required admin name), #11 (OWASP Top 10 fixes: IPv6 /64 rate
+  limits, audit-log privacy and retention, participant logout, input checks, 503 on DB outages,
+  Dependabot, pip-audit, SHA-pinned actions, hardened compose; README overview with
+  screenshots) and the follow-up that updated this section. After the stack went wrong (see
+  below), #3 and #4 reached `main` through #7, and #5 through #8. All review threads are resolved.
+- No feature branches of ours are left. Dependabot opens weekly update PRs (the first, #12,
+  bumps the Python group). Merging them is the owner's call; it publishes no image.
+- The OWASP fixes are not in a published image until the next GitHub release.
 - Stacked PRs, lessons learned: merge them bottom-up, and delete each head branch right after
   its merge, so GitHub moves the next PR's base to `main`. A PR merged into an already-merged
   base never reaches `main`. PRs in a GitHub *stack* can't have their base changed, and
