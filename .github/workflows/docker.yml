@@ -1,10 +1,10 @@
 name: Docker image
 
 # Publishing a GitHub release (semver tag such as v1.2.3, on a commit that is on
-# main) runs the tests and pushes :1.2.3, :1.2 and :1 to GHCR (pre-releases: only
-# their own tag). Afterwards the serialised "latest" job points :latest at the
-# image of whatever GitHub currently marks as the Latest release, so neither a fix
-# for an older line nor parallel release runs can move it backwards.
+# main) runs the tests and pushes :1.2.3 to GHCR. Afterwards the serialised
+# "aliases" job moves :1.2, :1 and :latest (.github/scripts/update-image-aliases.sh):
+# each points at the newest published version it covers, so neither a fix for an
+# older line nor parallel release runs can move an alias backwards.
 # Pull requests only build the image; nothing is pushed.
 on:
   release:
@@ -69,7 +69,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # version tags only; :latest is set by the serialised job below
+      # only the exact version; the alias tags are set by the serialised job below
       - id: meta
         uses: docker/metadata-action@v6
         with:
@@ -78,8 +78,6 @@ jobs:
             latest=false
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
             type=ref,event=pr
 
       - uses: docker/build-push-action@v7
@@ -92,18 +90,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  latest:
+  aliases:
+    name: Alias tags (:X.Y, :X, :latest)
     needs: image
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    # one group for the whole repository: :latest updates never overlap
+    # one group for the whole repository: alias updates never overlap
     concurrency:
-      group: docker-latest
+      group: docker-aliases
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v7
+
       - name: Image name (lowercase, as GHCR requires)
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
@@ -115,20 +116,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Not "is this run's release the latest?" but "make :latest match GitHub's
-      # Latest release": whichever run gets here last leaves the right state.
-      - name: Point :latest at GitHub's Latest release
+      - name: Point the alias tags at the newest versions they cover
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! newest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null); then
-            echo "No stable release yet (only pre-releases); :latest stays unset."
-            exit 0
-          fi
-          version="${newest#v}"
-          if ! docker buildx imagetools inspect "$IMAGE:$version" > /dev/null 2>&1; then
-            echo "The image for ${newest} isn't published (yet); its own run sets :latest."
-            exit 0
-          fi
-          docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$version"
-          echo "Set :latest to ${version}."
+          TAG: ${{ github.event.release.tag_name }}
+        run: .github/scripts/update-image-aliases.sh "$IMAGE" "$TAG"

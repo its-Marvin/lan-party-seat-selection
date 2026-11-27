@@ -412,10 +412,11 @@ GitHub Actions run the tests on every push, on SQLite (Python 3.11 and 3.13) and
 without publishing it.
 
 A new image is published only when a **GitHub release** is published, and only if its tag points to
-a commit on `main`. The workflow runs the tests first. A release `v1.2.3` publishes `:1.2.3`,
-`:1.2` and `:1`. Then `:latest` is pointed at the image of whatever GitHub marks as the latest
-release, one run at a time, so neither a fix for an older version line nor two releases published
-at once can move it backwards. A pre-release publishes only its own tag. Release tags must be
+a commit on `main`. The workflow runs the tests first. A release `v1.2.3` publishes `:1.2.3`.
+Then, one run at a time, the alias tags are updated: `:1.2` and `:1` point at the newest stable
+release in their line, and `:latest` at the release GitHub marks as latest. A fix for an older
+version line (`v1.1.5` after `v1.2.0`) or two releases published at once can't move an alias
+backwards. A pre-release publishes only its own tag. Release tags must be
 semantic versions (`v1.2.3`). Pushes to `main` publish
 nothing.
 

@@ -123,13 +123,13 @@ def test_compose_pulls_the_published_image_and_the_override_builds_it():
     assert "needs: tests" in workflow and "needs: on-main" in workflow
     assert "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main" in workflow
     assert "branches: [main]" not in workflow  # a push to main publishes nothing
-    # :latest never comes from metadata-action's automatic rule, only from one serialised job
-    # that copies GitHub's Latest release (a 404 = only pre-releases so far, not an error)
-    assert "latest=false" in workflow
-    latest_job = workflow.split("\n  latest:\n", 1)[1]
-    assert "group: docker-latest" in latest_job and "cancel-in-progress: false" in latest_job
-    assert "releases/latest" in latest_job and "imagetools create --tag \"$IMAGE:latest\"" in latest_job
-    assert "No stable release yet" in latest_job
+    # alias tags never come from metadata-action (it would move them backwards on an
+    # out-of-order release), only from one serialised job running the alias script
+    # (whose behaviour tests/test_ci.py checks)
+    assert "latest=false" in workflow and "{{major}}" not in workflow
+    aliases_job = workflow.split("\n  aliases:\n", 1)[1]
+    assert "group: docker-aliases" in aliases_job and "cancel-in-progress: false" in aliases_job
+    assert ".github/scripts/update-image-aliases.sh" in aliases_job
 
 
 def test_image_runs_unprivileged_and_leaves_private_files_out():

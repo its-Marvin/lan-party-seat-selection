@@ -28,9 +28,12 @@ Requirements from the owner: **no Java**, tests and README required.
   override that builds from the checkout instead.
 - CI: `.github/workflows/tests.yml` (every branch push; SQLite on 3.11/3.13 and Postgres 17) and
   `docker.yml` (PRs: build only; a **published release** whose tag is on `main`: checks that,
-  calls tests.yml, then pushes a multi-arch image `:X.Y.Z`, `:X.Y`, `:X` to GHCR; a separate job
-  in the global `docker-latest` concurrency group then retags GitHub's current `releases/latest`
-  as `:latest` (convergent, so races and cancelled queued runs can't roll it back).
+  calls tests.yml, then pushes a multi-arch image `:X.Y.Z` to GHCR. A separate `aliases` job in
+  the global `docker-aliases` concurrency group runs `.github/scripts/update-image-aliases.sh`:
+  `:X`/`:X.Y` = newest stable release in that line, `:latest` = GitHub's `releases/latest`,
+  computed from all releases each time (convergent, so out-of-order releases, races and cancelled
+  queued runs can't move an alias backwards). `tests/test_ci.py` runs the script with stub
+  `gh`/`docker`.
   The owner wants images published **only on releases**, never on pushes to main. Keep actions
   on their Node 24 majors (Node 20 actions trigger deprecation warnings). Lint workflows with
   `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest`. The repo is public; after
