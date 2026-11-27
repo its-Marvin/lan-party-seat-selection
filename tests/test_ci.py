@@ -35,7 +35,7 @@ def release(tag, draft=False, prerelease=False):
     return {"tag_name": tag, "draft": draft, "prerelease": prerelease}
 
 
-def run_aliases(tmp_path, tag, releases, latest, published):
+def run_aliases(tmp_path, releases, latest, published):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, body in (("gh", GH), ("docker", DOCKER)):
@@ -46,7 +46,7 @@ def run_aliases(tmp_path, tag, releases, latest, published):
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_REPOSITORY": "its-Marvin/x",
            "FAKE_RELEASES": json.dumps(releases), "FAKE_LATEST": latest or "",
            "FAKE_PUBLISHED": " ".join(published), "IMAGE_NAME": IMAGE, "CREATED": str(created)}
-    result = subprocess.run(["bash", str(SCRIPT), IMAGE, tag], env=env, capture_output=True, text=True)
+    result = subprocess.run(["bash", str(SCRIPT), IMAGE], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     moves = {}
     for line in created.read_text().splitlines():
@@ -58,30 +58,38 @@ def run_aliases(tmp_path, tag, releases, latest, published):
 def test_a_fix_for_an_older_line_moves_no_alias_backwards(tmp_path):
     # v1.2.0 is out; then v1.1.5 fixes the 1.1 line
     releases = [release("v1.1.5"), release("v1.2.0"), release("v1.1.0")]
-    moves = run_aliases(tmp_path, "v1.1.5", releases, "v1.2.0", ["1.1.0", "1.1.5", "1.2.0"])
-    assert moves == {"1": "1.2.0", "1.1": "1.1.5", "latest": "1.2.0"}
+    moves = run_aliases(tmp_path, releases, "v1.2.0", ["1.1.0", "1.1.5", "1.2.0"])
+    assert moves == {"1": "1.2.0", "1.1": "1.1.5", "1.2": "1.2.0", "latest": "1.2.0"}
+
+
+def test_every_line_is_reconciled_when_another_run_was_replaced(tmp_path):
+    """GitHub cancels a pending job when a newer one joins the concurrency group: the
+    queued run for v1.1.5 may never happen, so the v2.0.0 run must fix :1.1 as well."""
+    releases = [release("v2.0.0"), release("v1.1.5"), release("v1.2.0"), release("v1.1.0")]
+    moves = run_aliases(tmp_path, releases, "v2.0.0", ["1.1.0", "1.1.5", "1.2.0", "2.0.0"])
+    assert moves == {"1": "1.2.0", "1.1": "1.1.5", "1.2": "1.2.0",
+                     "2": "2.0.0", "2.0": "2.0.0", "latest": "2.0.0"}
 
 
 def test_drafts_and_pre_releases_are_ignored(tmp_path):
     releases = [release("v2.0.0-rc.1", prerelease=True), release("v1.3.0", draft=True), release("v1.2.0")]
-    moves = run_aliases(tmp_path, "v2.0.0-rc.1", releases, "v1.2.0", ["2.0.0-rc.1", "1.2.0"])
-    # no stable 2.x yet: :2 and :2.0 stay unset; :latest keeps pointing at 1.2.0
-    assert moves == {"latest": "1.2.0"}
+    moves = run_aliases(tmp_path, releases, "v1.2.0", ["2.0.0-rc.1", "1.2.0"])
+    # no stable 2.x yet (and the 1.3.0 draft doesn't count): only the 1.2.0 aliases move
+    assert moves == {"1": "1.2.0", "1.2": "1.2.0", "latest": "1.2.0"}
 
 
 def test_an_unpublished_newer_image_is_left_to_its_own_run(tmp_path):
     releases = [release("v1.3.0"), release("v1.2.0")]
-    moves = run_aliases(tmp_path, "v1.2.0", releases, "v1.3.0", ["1.2.0"])   # 1.3.0 still building
+    moves = run_aliases(tmp_path, releases, "v1.3.0", ["1.2.0"])   # 1.3.0 still building
     assert moves == {"1.2": "1.2.0"}
 
 
 def test_only_pre_releases_so_far_is_not_an_error(tmp_path):
-    moves = run_aliases(tmp_path, "v1.0.0-beta.1", [release("v1.0.0-beta.1", prerelease=True)], None,
-                        ["1.0.0-beta.1"])
+    moves = run_aliases(tmp_path, [release("v1.0.0-beta.1", prerelease=True)], None, ["1.0.0-beta.1"])
     assert moves == {}
 
 
 def test_minor_lines_are_matched_exactly(tmp_path):
     releases = [release("v1.10.0"), release("v1.1.0")]
-    moves = run_aliases(tmp_path, "v1.1.0", releases, "v1.10.0", ["1.1.0", "1.10.0"])
-    assert moves == {"1": "1.10.0", "1.1": "1.1.0", "latest": "1.10.0"}
+    moves = run_aliases(tmp_path, releases, "v1.10.0", ["1.1.0", "1.10.0"])
+    assert moves == {"1": "1.10.0", "1.1": "1.1.0", "1.10": "1.10.0", "latest": "1.10.0"}

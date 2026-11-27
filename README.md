@@ -413,10 +413,10 @@ without publishing it.
 
 A new image is published only when a **GitHub release** is published, and only if its tag points to
 a commit on `main`. The workflow runs the tests first. A release `v1.2.3` publishes `:1.2.3`.
-Then, one run at a time, the alias tags are updated: `:1.2` and `:1` point at the newest stable
-release in their line, and `:latest` at the release GitHub marks as latest. A fix for an older
-version line (`v1.1.5` after `v1.2.0`) or two releases published at once can't move an alias
-backwards. A pre-release publishes only its own tag. Release tags must be
+Then, one run at a time, all alias tags are brought up to date: every `:X.Y` and `:X` points at
+the newest stable release in its line, and `:latest` at the release GitHub marks as latest. A fix
+for an older version line (`v1.1.5` after `v1.2.0`) or several releases published at once can't
+move an alias backwards or leave one stale. A pre-release publishes only its own tag. Release tags must be
 semantic versions (`v1.2.3`). Pushes to `main` publish
 nothing.
 

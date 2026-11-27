@@ -2,9 +2,9 @@ name: Docker image
 
 # Publishing a GitHub release (semver tag such as v1.2.3, on a commit that is on
 # main) runs the tests and pushes :1.2.3 to GHCR. Afterwards the serialised
-# "aliases" job moves :1.2, :1 and :latest (.github/scripts/update-image-aliases.sh):
+# "aliases" job reconciles every :X, :X.Y and :latest (.github/scripts/update-image-aliases.sh):
 # each points at the newest published version it covers, so neither a fix for an
-# older line nor parallel release runs can move an alias backwards.
+# older line nor parallel or replaced release runs can leave an alias wrong.
 # Pull requests only build the image; nothing is pushed.
 on:
   release:
@@ -116,8 +116,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Point the alias tags at the newest versions they cover
+      # all lines, not just this release's: GitHub may have cancelled other pending runs
+      - name: Point every alias tag at the newest version it covers
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: .github/scripts/update-image-aliases.sh "$IMAGE" "$TAG"
+        run: .github/scripts/update-image-aliases.sh "$IMAGE"

@@ -30,9 +30,9 @@ Requirements from the owner: **no Java**, tests and README required.
   `docker.yml` (PRs: build only; a **published release** whose tag is on `main`: checks that,
   calls tests.yml, then pushes a multi-arch image `:X.Y.Z` to GHCR. A separate `aliases` job in
   the global `docker-aliases` concurrency group runs `.github/scripts/update-image-aliases.sh`:
-  `:X`/`:X.Y` = newest stable release in that line, `:latest` = GitHub's `releases/latest`,
-  computed from all releases each time (convergent, so out-of-order releases, races and cancelled
-  queued runs can't move an alias backwards). `tests/test_ci.py` runs the script with stub
+  every `:X`/`:X.Y` = newest stable release in that line, `:latest` = GitHub's
+  `releases/latest`. Each run reconciles **all** lines from the full release list, because GitHub
+  cancels older *pending* jobs in a concurrency group even with `cancel-in-progress: false`. `tests/test_ci.py` runs the script with stub
   `gh`/`docker`.
   The owner wants images published **only on releases**, never on pushes to main. Keep actions
   on their Node 24 majors (Node 20 actions trigger deprecation warnings). Lint workflows with
