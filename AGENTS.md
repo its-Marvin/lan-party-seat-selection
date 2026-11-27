@@ -292,7 +292,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   Auto/Light/Dark, 7-day login links), #3 (several events, `TIMEZONE`), #4 (per-event themes,
   `THEMES_DIR`, retro theme, `THEMES.md`), #5 (English/German), #10 (Docker + PostgreSQL, CI,
   release-only image publishing, required admin name), #11 (OWASP Top 10 fixes, README overview
-  with screenshots), #13 (AGENTS.md state) and the mail PR from `feature/mail`: optional mail
+  with screenshots), #13 (AGENTS.md state) and #14: optional mail
   (confirmation within 2 h, payment request, reminders, seat confirmation with a personal link,
   admin messages, themed mails, scheduler service), admin areas `/admin/events`, `/settings`,
   `/mail`, `/security` (admin password in the DB, sessions, participant access, checks), default
