@@ -1,24 +1,68 @@
 # LAN Party Seat Selection
 
-A small web app for LAN party seat registration.
+Seat registration for your LAN party. Participants sign up, pick their seat on a map of your
+venue and see straight away what to pay and where. You confirm the payments and keep everything
+in one place, instead of in a group chat, a spreadsheet and a PayPal inbox.
 
-- **Participants** sign up with their name and email, then pick a seat on the seat map.
-  Once they pick a seat, a popup tells them how much to pay and which PayPal address to send it to.
-- **Admins** confirm payments, move people to other seats, and remove people. They also
-  set the PayPal address, the amount due and the event details, and they arrange the
-  **seat layout**: groups of two-person tables that they drag into place on a plan of the event area,
-  together with doors, windows, the sleeping area and food & drinks.
-- The public page shows the event's name, date, location, fee and description.
-- **English and German:** both pages, including error messages, follow the browser language
-  and can be switched in the header. See [Languages](#languages).
-- **Themes:** each event can have its own look (a retro green terminal theme is included), and
-  you can add your own theme folders. See [THEMES.md](THEMES.md).
-- **Several events:** admins prepare future events in advance. Each one opens automatically on
-  its "registration opens" date and is archived when it ends. Only one event is open at a time.
+![The public page: event details, your registration and the seat map](docs/screenshots/public-page.png)
+
+## What it does
+
+**For participants**
+
+- Sign up with a name and email, then click a free seat on a map that shows the real venue:
+  tables, doors, windows, the sleeping area and food & drinks.
+- After picking a seat, a popup shows the fee, the PayPal address, a payment reference and the
+  payment deadline.
+- See who sits where (with the event code), switch seats later (a payment moves along), and
+  log in on other devices with a one-time link. No passwords to remember.
+- Works on phones, in light and dark mode, in English and German (see [Languages](#languages)).
+
+<p>
+  <img src="docs/screenshots/payment-dialog.png" alt="Payment popup after picking a seat" width="62%">
+  <img src="docs/screenshots/phone.png" alt="The seat map on a phone" width="30%">
+</p>
+
+**For organizers**
+
+- **Participants and payments:** confirm payments, move people to other seats, remove them, or
+  send someone a login link. The summary shows how many seats are taken and paid, and how much
+  money came in and is still outstanding.
+- **Unpaid reservations expire** after a set time (48 hours by default), so nobody blocks a seat
+  without paying.
+- **Seat layout editor:** drag groups of two-person tables and area elements into place on a grid.
+  Seats are numbered automatically (A1, A2, …), and people keep their seats when you rearrange.
+- **Several events:** prepare the next LAN in advance. Each event opens on its registration date
+  and is archived when it ends.
+- **Themes:** give each event its own look; a retro terminal theme is included, and you can add
+  your own (see [THEMES.md](THEMES.md)).
+- **Audit log:** every admin action is recorded with the admin's name, so a changed PayPal
+  address or a confirmed payment can always be traced.
+
+![Participants table in the admin area, with payment summary](docs/screenshots/admin-participants.png)
+
+![The drag-and-drop seat layout editor](docs/screenshots/layout-editor.png)
+
+![The public seat map in the included retro theme](docs/screenshots/retro-theme.png)
+
+## Why use it
+
+- **Made for LAN parties:** two-person tables, seat groups, a fee paid via PayPal, and the
+  question everyone asks ("who sits next to me?") are built in, not bolted onto a generic
+  booking tool.
+- **Private by default:** registration stays closed and names stay hidden until you set an
+  **event code**, which you share only with your guests. Email addresses are only shown to admins (and each participant sees their own).
+- **Secure:** rate limits on every guessable code, server-side admin sessions, a strict
+  content security policy and an audit log; reviewed against the OWASP Top 10
+  (see [Security](#security)).
+- **Easy to run:** one `docker compose up -d` with PostgreSQL, or just Python and SQLite on a
+  laptop. No build step, no JavaScript framework, no external services: your participants' data
+  stays on your server.
+- **Free and open source** (see [License](#license)).
 
 Stack: Python 3.11+ with Flask, SQLite (Python's built-in `sqlite3`) or PostgreSQL, and plain
 HTML/CSS/JS with no build step. A Docker Compose setup with PostgreSQL is included
-(see [Docker](#docker)).
+(see [Docker](#docker)). The screenshots show a fictional demo event.
 
 ## Quick start
 
@@ -50,12 +94,13 @@ All configuration is done with environment variables:
 | `SESSION_COOKIE_SECURE` | `0`                          | Set this to `1` when you serve the app over HTTPS. The admin cookie is then only sent over HTTPS. |
 | `TRUSTED_PROXIES`       | `0`                          | Number of reverse proxies in front of the app. Needed so that rate limits see the real client IP (see [Deployment](#deployment-notes)). |
 | `MAX_CONTENT_LENGTH`    | `262144` (256 KB)            | Maximum request size in bytes. |
-| `ADMIN_LOGIN_MAX_PER_IP` / `ADMIN_LOGIN_MAX_GLOBAL` | `5` / `50` | Failed admin logins allowed per IP / in total, per `ADMIN_LOGIN_WINDOW_MINUTES` (`15`). |
+| `ADMIN_LOGIN_MAX_PER_IP` / `ADMIN_LOGIN_MAX_GLOBAL` | `5` / `50` | Failed admin logins allowed per IP / in total, per `ADMIN_LOGIN_WINDOW_MINUTES` (`15`). "Per IP" limits count IPv6 clients per `/64` network (see [Security](#security)). |
 | `REGISTER_MAX_PER_IP`   | `10`                         | Registrations per IP per hour. Failed attempts count too. |
 | `MAX_PENDING_PER_IP`    | `4`                          | Unpaid seat reservations made from one IP at the same time. |
 | `LOGIN_CODE_MAX_PER_IP` | `20`                         | Login link attempts per IP per 15 minutes. |
 | `EVENT_CODE_MAX_PER_IP` | `10`                         | Wrong event codes per IP per 15 minutes. |
 | `LOGIN_CODE_HOURS`      | `168`                        | How long a one-time login link stays valid (default 7 days). |
+| `AUDIT_LOG_RETENTION_DAYS` | `365`                     | Audit log entries older than this are deleted (the log names participants and their emails). `0` keeps them forever. |
 | `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `60` / `12` | An admin session ends after this much inactivity, or after this total time at the latest. |
 | `THEMES_DIR`            | `instance/themes`            | Folder with your own themes, one sub-folder per theme (see [THEMES.md](THEMES.md)). |
 | `TIMEZONE`              | *(server's local time)*      | IANA time zone of the event dates, e.g. `Europe/Berlin`. Decides when registration opens and when an event is archived. Set it when the server runs in UTC (e.g. in a container). |
@@ -214,6 +259,9 @@ Limits: at most 60 groups, 60 tables per group, 1000 seats in total and 100 area
    It works once, stays valid for 7 days (`LOGIN_CODE_HOURS`), and gives that device its own token. The device the link
    came from stays logged in. If a browser that is already logged in as someone else opens a link,
    it asks before switching accounts. People who lost access can get a link from an admin.
+7. **Logging out:** *Log out* ends the login on this device; the token stops working on the server
+   too, not only in the browser. *Log out other devices* ends every other login of that person
+   (for example on a lost phone) and voids their unused login links.
 
 Seat colours: free, reserved (payment pending), paid, your seat. The public seat map shows
 the tables and groups exactly as the admin arranged them. Hovering over a seat (or clicking a taken
@@ -243,9 +291,11 @@ On `/admin`, after logging in with `ADMIN_PASSWORD`:
 - **Seat layout editor** (see [Seat layout](#seat-layout)).
 - **Event** card: switch between events, create the next one, delete old ones (see [Events](#events)).
 - Settings form for the event, the payment and the reservation hold time.
-- **Audit log:** shows admin logins (including failed attempts with their IP), payment
-  confirmations, moves, removals, login links, settings changes (the PayPal address and amount
-  are highlighted) and automatically released reservations. Admins must enter their name when they
+- **Audit log:** shows admin logins (including failed attempts, with the network they came
+  from), payment confirmations, moves, removals, login links, settings changes (the PayPal
+  address and amount are highlighted), automatically released reservations, and networks that
+  used up their attempts at guessing the event code (highlighted). Entries are deleted after
+  `AUDIT_LOG_RETENTION_DAYS` (365 days by default). Admins must enter their name when they
   log in (a login without one is refused), so the log shows who did what even though everyone
   shares one password.
 - **Log out everywhere** ends all admin sessions, e.g. after a laptop was lost.
@@ -264,6 +314,8 @@ All endpoints are under `/api` and use JSON.
 | POST   | `/me/seat` | token | `{seat: "B3"}` → reserve or change seat; returns payment info |
 | DELETE | `/me/seat` | token | Release your seat (only before payment is confirmed) |
 | POST   | `/me/login-link` | token | → `{code, expires_at}`: a one-time login code |
+| POST   | `/me/logout` | token | Invalidate this device's token |
+| POST   | `/me/logout-others` | token | → `{devices}`: invalidate all other tokens of this person and their unused login codes |
 | POST   | `/login/preview` | – | `{code}` → `{user_id, name}`; doesn't use up the code |
 | POST   | `/login` | – | `{code}` → `{token, user}`; uses up the code |
 | POST   | `/admin/login` | – | `{password, name}` (rate-limited; `name` is required, 400 without it) |
@@ -309,7 +361,8 @@ Layout format:
 "token" means the `X-User-Token` header. "admin" means the `lp_admin` cookie set by `/admin/login`.
 Request bodies must be sent as `Content-Type: application/json`. Other content types get a 415 error,
 malformed JSON gets a 400 error, and requests over the size limit get a 413 error. When a rate limit
-is hit, the response is a 429 error with a `Retry-After` header.
+is hit, the response is a 429 error with a `Retry-After` header. When the database is unreachable or
+a write waits too long for its lock, the response is a 503 error with a `Retry-After` header.
 
 ## Security
 
@@ -321,26 +374,36 @@ What the app protects against, and how:
 | Stolen or forged admin cookies | Sessions are stored in the database, behind a random `HttpOnly`, `SameSite=Strict` cookie with `Path=/api`. They end after 60 minutes of inactivity or 12 hours at most, on logout, with *Log out everywhere*, or when `ADMIN_PASSWORD` changes. |
 | Admin actions nobody can trace (e.g. a changed PayPal address) | The audit log records the admin's name for each action. |
 | One person reserving every seat | Registrations limited per IP, at most 4 unpaid reservations per IP, unpaid reservations expire. Registration requires the event code. |
+| Dodging per-IP limits with IPv6 | Every IPv6 user can choose among the 2^64 addresses of their `/64` network, so IPv6 clients are counted per `/64`. IPv4-mapped addresses count as the IPv4 address. |
+| A lost phone that is still logged in | *Log out other devices* invalidates every other device token and unused login link of that person; admins can also remove the person. |
 | Strangers seeing who attends | The seat plan shows names only to code holders, participants and admins. Guessing the code is rate-limited. Without a code (the default), nobody but participants and admins sees names. |
 | Login tokens leaking via URLs or logs | Personal links are one-time codes in the URL fragment (`#login=…`), which browsers never send to the server. Tokens and codes are stored only as SHA-256 hashes. |
 | Being tricked into using someone else's account | A login link asks before replacing an existing login. |
 | XSS / clickjacking | All user text is inserted with `textContent`. Strict CSP (`default-src 'self'`, no inline scripts, `object-src`/`base-uri 'none'`), `X-Frame-Options: DENY`. |
 | CSRF | The admin cookie is `SameSite=Strict`, and the API only accepts `application/json` bodies. Participant requests use a custom header. |
-| Oversized or malicious requests | 256 KB size limit. `NaN`/`Infinity` and deeply nested JSON are rejected with a 400 error. |
+| Oversized or malicious requests | 256 KB size limit. `NaN`/`Infinity`, deeply nested JSON, NUL characters and lone UTF-16 surrogates are rejected with a 400 error. |
+| Email addresses that rewrite a mail link (`a@b.de?cc=…`) | Addresses with `?`, `#`, `%`, `<`, `>` or quotes are refused at registration, and the admin page escapes mail links. |
+| Vulnerable or tampered dependencies | Dependabot proposes weekly updates for Python packages, base images and GitHub Actions. CI runs `pip-audit` on every push and weekly. Actions are pinned to commit SHAs and the Python base image to a digest. |
 | Caching of personal data | `Cache-Control: no-store` on all API responses. |
 | SQL injection | Only parameterised queries. |
 
 The rate-limit tables store keyed hashes of IP addresses, not the addresses themselves. The
-audit log does store the real IP of admin login attempts, because that's what you need to
-investigate an attack.
+audit log keeps only the network of admin login attempts and event-code lockouts (IPv4 `/24`,
+IPv6 `/48`): enough to see where an attack comes from, without storing addresses. Entries
+written by older versions with full IPs are shortened the same way at startup.
 
 Known limitations:
 - The app never checks that an email address is real. Someone can register with another
   person's address (an admin can remove that registration), and the "already registered" message
   reveals whether an address is in use (rate-limited).
-- The per-IP limits are best-effort: a determined attacker with many IP addresses can still
-  reserve several seats. Those seats are released when the reservation time runs out, and the
-  admin sees all reservations.
+- The per-IP limits are best-effort: a determined attacker with many IP addresses (or several
+  IPv6 networks) can still reserve several seats. Those seats are released when the reservation
+  time runs out, and the admin sees all reservations. The event code is 4 to 6 characters; use
+  6 for events you announce publicly.
+- Everyone shares one admin password, and there is no second factor. The overall limit on failed
+  admin logins means that someone with many IP addresses can lock the admins out for 15 minutes.
+- Participant device tokens stay valid until the participant logs out, is removed, or the event
+  ends (tokens only work for the active event).
 - The names of participants are visible to everyone who has the event code. Mention this in your
   event's privacy notice.
 
@@ -366,6 +429,9 @@ and renumbering when a group is renamed. `tests/test_security.py` covers the pro
 rate limits, session expiry and revocation, rejection of forged cookies, reservation expiry,
 one-time login links, input hardening, the audit log, and migration of databases from older versions.
 `tests/test_event_code.py` covers hiding names, the registration check and the limits on code guessing.
+`tests/test_owasp.py` covers the fixes from the OWASP Top 10 review: limits per IPv6 network, the
+audit log's privacy and retention, participant logout, input checks, 503 responses, and the
+supply-chain and container settings.
 
 ## Docker
 
@@ -403,12 +469,22 @@ Other variables from [Configuration](#configuration) can be added to the `app` s
   as `THEMES_DIR`.
 - **Updating:** `docker compose pull && docker compose up -d`. The schema is updated at startup.
   Pin `LANPARTY_VERSION` to a release to update only when you choose to.
-- The container runs as an unprivileged user and has a health check on `/api/info`.
+- The container runs as an unprivileged user and has a health check on `/api/info`. The compose
+  file also makes its filesystem read-only (except a small `/tmp`), drops all Linux capabilities
+  and sets `no-new-privileges`; the database container keeps only the capabilities its entrypoint
+  needs.
+- **Security updates** of the image come with releases (each release rebuilds it from the
+  current base image). To check a running image yourself:
+  `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image ghcr.io/its-marvin/lan-party-seat-selection:latest`.
 
 ## Continuous integration
 
 GitHub Actions run the tests on every push, on SQLite (Python 3.11 and 3.13) and on PostgreSQL 17
-(`.github/workflows/tests.yml`). `.github/workflows/docker.yml` builds the image for pull requests
+(`.github/workflows/tests.yml`). The same workflow audits the image's Python dependencies
+(`requirements-docker.txt`) with `pip-audit`, and runs weekly as well so new vulnerabilities show up
+without a push. Dependabot (`.github/dependabot.yml`) opens weekly update PRs for Python
+packages, the base image, the PostgreSQL image (no major upgrades) and the actions, which are
+pinned to commit SHAs. `.github/workflows/docker.yml` builds the image for pull requests
 without publishing it.
 
 A new image is published only when a **GitHub release** is published, and only if its tag points to
@@ -425,11 +501,12 @@ nothing.
 - `python -m lanparty` runs Flask's development server. For a real event, use [Docker](#docker)
   or a WSGI server, e.g.:
   ```bash
-  .venv/bin/pip install gunicorn
+  .venv/bin/pip install -r requirements-docker.txt
   .venv/bin/gunicorn -w 2 -b 0.0.0.0:8000 'lanparty:create_app()'
   ```
 - **Always serve it over HTTPS** in production, behind a reverse proxy such as Caddy, nginx or Traefik:
-  - Set `SESSION_COOKIE_SECURE=1`.
+  - Set `SESSION_COOKIE_SECURE=1`. It stays `0` by default only because a LAN-only setup often has
+    no HTTPS; then the admin cookie travels in plain text over the network.
   - Set `TRUSTED_PROXIES=1`, so the app takes the client IP from `X-Forwarded-For`. Without it,
     every visitor seems to come from the proxy's IP, and the per-IP limits apply to everyone together.
     Only set it when a proxy really is in front of the app; otherwise clients can fake their IP.

@@ -38,11 +38,16 @@ Requirements from the owner: **no Java**, tests and README required.
   on their Node 24 majors (Node 20 actions trigger deprecation warnings). Lint workflows with
   `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest`. The repo is public; after
   the first publish, check that the GHCR package is public too (new packages can start private).
+- Supply chain: actions are pinned to **commit SHAs** with a `# vX.Y.Z` comment, and the Python
+  base image to a digest; Dependabot (`.github/dependabot.yml`) updates both, plus pip and the
+  compose Postgres image (no majors). `tests/test_owasp.py` fails on an unpinned `uses:`. To add an
+  action, look up the release commit (`gh api repos/<o>/<r>/git/ref/tags/<tag>`). The image installs
+  `requirements-docker.txt` (app + gunicorn), which the `audit` job checks with `pip-audit`.
 - The venv is at `.venv`. There is no system pip, and Node is not installed.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest -q                                   # ~305 tests, ~5 s
+.venv/bin/pytest -q                                   # ~365 tests, ~5 s
 # the same suite on PostgreSQL (~30 s; a schema per test, sqlite_only tests skipped):
 docker run -d --rm --name lanparty-pg-test -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:17-alpine
 LANPARTY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/pytest -q
@@ -78,7 +83,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
 | `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
 | `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
-| `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_database` (adapter, schema parity, portable SQL, Docker files), `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
+| `tests/` | `test_owasp.py` (regressions from the OWASP Top 10 review), `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_database` (adapter, schema parity, portable SQL, Docker files), `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
 
 ## Rules that must not break
 
@@ -105,6 +110,9 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Reads that must agree with each other (for example layout plus occupants in `/api/seats`) go
   in `db.read_snapshot()`. Do anything that writes, such as rate limits or admin session
   refresh, after it.
+- Rate limits are keyed by `security.ip_hash()`, which hashes `client_network()`: the IPv4
+  address or the **IPv6 /64** (one subscriber can use any address in it). Never key a limit
+  on the raw `client_ip()`.
 - Rate limits use `security.consume()`, which checks and records atomically. Call
   `release(event_id)` on success where attempts should only count failures (admin login,
   event code).
@@ -161,12 +169,20 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Admin auth uses a server-side session (`lp_admin` cookie: HttpOnly, SameSite=Strict,
   Path=/api) with 60 min idle and 12 h max. Changing `ADMIN_PASSWORD` invalidates all sessions.
   Passwords under 12 characters are refused unless `ALLOW_WEAK_ADMIN_PASSWORD=1` or TESTING.
-- Participants use device tokens (`user_tokens`, stored hashed). One-time login links are
+- Participants use device tokens (`user_tokens`, stored hashed). `/api/me/logout` deletes this
+  device's token; `/api/me/logout-others` deletes the others and the person's login codes.
+  Revoke only through `revoke_tokens()`: it also replaces the legacy `users.token_hash` copy.
+  The startup backfill from that column runs **once** (`_legacy_tokens_copied` in `settings`),
+  or revoked tokens would come back. Redeeming a code + issuing the token, re-checking the
+  token + creating a link, and logging out others each run in one `write_transaction()`. One-time login links are
   `/#login=<code>`, kept in the URL fragment so they stay out of server logs. They are valid
   for `LOGIN_CODE_HOURS` (default **168 h = 7 days**, the owner wants at least a week).
-- Strict JSON parsing (rejects NaN/Infinity, overflowing numbers and NUL characters anywhere,
-  which PostgreSQL can't store), 256 KB body limit,
+- Strict JSON parsing (rejects NaN/Infinity, overflowing numbers, and NUL characters or lone
+  surrogates anywhere, which the databases can't store), 256 KB body limit,
   `Cache-Control: no-store` on `/api`, `TRUSTED_PROXIES` for ProxyFix.
+- The audit log never gets full IPs: use `security.anonymized_ip()` (IPv4 /24, IPv6 /48).
+  `prune_audit_log()` deletes entries older than `AUDIT_LOG_RETENTION_DAYS` (on admin login and
+  when the log is read).
 - Audit everything an admin would want to trace (`security.audit`). Inside a write transaction
   use `security.record_audit()` (no commit), so the entry describes exactly the change made under
   that lock; `assign_seat()` audits seat moves and paid switches that way.
@@ -206,6 +222,12 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 ## How the owner likes to work
 
 - The owner writes in English and sometimes German. Answer in the language they use.
+- **Security first.** Write every change with security in mind, not as an afterthought: think
+  about who can call it, what input an attacker controls, races between workers, and what
+  data ends up stored or logged. Check new features against known threat lists such as the
+  [OWASP Top 10](https://owasp.org/Top10/), and repeat a full review of the app regularly (the
+  last one, 2026-11-27, is in PR #11 and `tests/test_owasp.py`). Fix findings with a regression
+  test, and record deliberately accepted risks under "Ideas not done yet".
 - Commit or push **only when asked**. Branch off `main` first, using `feature/...` names. End
   commit messages with the `Co-Authored-By` trailer the harness specifies.
 - PR review loop (GitHub Copilot reviews the PRs):
@@ -222,15 +244,21 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   session scratchpad, with Chromium cached at `~/.cache/ms-playwright/chromium-1228/`; recreate
   it if it is gone. Test at 1280, 375 and 320 px, in both themes.
 - Keep the README up to date with behaviour and config changes.
+- README screenshots live in `docs/screenshots/` and show a **fictional** demo event ("Winter LAN
+  2027", made-up names, `@example.com`), built in a temp DB via the API and captured with
+  Playwright at 1280 px (phone: 375 px, scale 2). Never take them from `instance/dev.sqlite3`.
+  Retake them when the UI they show changes visibly.
 
-## Current state (2026-11-26)
+## Current state (2026-11-27)
 
-- Everything is merged into `main`: #1 (the app), #2 (mobile layout, paid seat switching,
+- Everything up to #10 (Docker + PostgreSQL, CI, release-only image publishing, required admin
+  name) is merged into `main`: #1 (the app), #2 (mobile layout, paid seat switching,
   Auto/Light/Dark, 7-day login links), #3 (several events, `TIMEZONE`), #4 (per-event themes,
   `THEMES_DIR`, retro theme, `THEMES.md`) and #5 (English/German). After the stack went wrong
-  (see below), #3 and #4 reached `main` through #7, and #5 through #8. All Copilot review
-  threads are resolved.
-- No feature branches are left; `main` is the only branch.
+  (see below), #3 and #4 reached `main` through #7, and #5 through #8.
+- `feature/owasp-hardening`: fixes from the OWASP Top 10 review (IPv6 /64 rate limits, audit-log
+  privacy and retention, participant logout, surrogate/mailto input checks, 503 on DB outages,
+  Dependabot, pip-audit, SHA-pinned actions, hardened compose).
 - Stacked PRs, lessons learned: merge them bottom-up, and delete each head branch right after
   its merge, so GitHub moves the next PR's base to `main`. A PR merged into an already-merged
   base never reaches `main`. PRs in a GitHub *stack* can't have their base changed, and
@@ -243,3 +271,6 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - A cut-off for self-service seat switching (for example none after the event starts).
 - Email delivery of login links. Currently admins copy the link manually.
 - Translating event content (name, description) per language; translating audit log actions.
+- From the OWASP review, deliberately left open: verifying participant emails, personal admin
+  accounts or a second factor, signed images / SBOM, a global cap on wrong event codes (it would
+  let anyone lock real participants out).

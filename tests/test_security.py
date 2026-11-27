@@ -100,7 +100,8 @@ def test_admin_login_global_limit(tmp_path):
 def test_successful_login_is_audited(app, client):
     assert login(client).status_code == 200
     entry = client.get("/api/admin/audit").get_json()["entries"][0]
-    assert (entry["actor"], entry["action"], entry["details"]["ip"]) == ("Alice Admin", "admin.login", "10.0.0.1")
+    assert (entry["actor"], entry["action"], entry["details"]["network"]) == ("Alice Admin", "admin.login",
+                                                                         "10.0.0.0/24")
 
 
 # --- server-side admin sessions -----------------------------------------

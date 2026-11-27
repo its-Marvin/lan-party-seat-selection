@@ -309,6 +309,8 @@ button.seat:focus-visible { outline: 2px solid var(--accent); outline-offset: -2
 
 /* login links */
 .login-link-box { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: .75rem; }
+.logout-box { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: .75rem;
+  display: flex; flex-wrap: wrap; gap: .5rem; }
 .copy-row { display: flex; gap: .5rem; margin-top: .75rem; }
 .copy-row input { flex: 1; font-family: var(--font-mono); font-size: .8rem; }
 

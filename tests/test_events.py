@@ -95,7 +95,7 @@ def test_single_event_database_is_migrated_into_event_one(tmp_path):
     with app.app_context():
         conn = get_db()
         # per-event values moved, global ones stayed
-        assert {r[0] for r in conn.execute("SELECT key FROM settings")} == {"ip_pepper"}
+        assert {r[0] for r in conn.execute("SELECT key FROM settings")} == {"ip_pepper", "_legacy_tokens_copied"}
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         # the same email may now register for another event
         conn.execute("INSERT INTO events DEFAULT VALUES")

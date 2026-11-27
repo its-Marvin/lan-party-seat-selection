@@ -1,0 +1,34 @@
+# Weekly update PRs for everything the app and its image are built from.
+# Merging one does not publish an image: that still only happens on a release.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # stay on the Python minor the image is tested with; move up deliberately
+      - dependency-name: python
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # a new PostgreSQL major needs a dump and restore, so it is never proposed
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

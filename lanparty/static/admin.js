@@ -268,7 +268,7 @@ async function loadUsers() {
     const actions = readOnly ? [removeBtn] : [payBtn, el("span", { class: "move" }, select, moveBtn), linkBtn, removeBtn];
     tbody.append(el("tr", {},
       el("td", {}, u.name),
-      el("td", {}, el("a", { href: `mailto:${u.email}` }, u.email)),
+      el("td", {}, el("a", { href: mailtoHref(u.email) }, u.email)),
       el("td", {}, u.seat || "–"),
       el("td", {}, status),
       el("td", { class: "small" }, u.created_at + " UTC"),
@@ -309,7 +309,13 @@ async function act(fn) {
   await loadAudit();
 }
 
-const SECURITY_ACTIONS = new Set(["admin.login_failed", "admin.logout_all", "user.login_link_created"]);
+// "?", "#" and "%" would let an address add headers (cc, body, …) to the mail link
+function mailtoHref(email) {
+  return "mailto:" + email.replace(/[?#%&]/g, (ch) => encodeURIComponent(ch));
+}
+
+const SECURITY_ACTIONS = new Set(["admin.login_failed", "admin.logout_all", "user.login_link_created",
+  "event_code.limit_reached"]);
 
 function describeDetails(details) {
   return Object.entries(details).map(([key, value]) => {

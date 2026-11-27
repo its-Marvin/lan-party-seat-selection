@@ -21,7 +21,11 @@ from .db import IntegrityError, get_db, read_snapshot, utc_now, write_transactio
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Not allowed: whitespace and the characters that mean something in a mailto: link
+# (?, #, %), in HTML (<, >, ") or that real addresses (practically) never use.
+_EMAIL_PART = r"[^@\s?#%<>\"(),;:\\\[\]]+"
+_DOMAIN_PART = r"[^@\s?#%<>\"(),;:\\\[\]/]+"
+EMAIL_RE = re.compile(rf"^{_EMAIL_PART}@{_DOMAIN_PART}\.{_DOMAIN_PART}$")
 
 
 class ApiError(Exception):
@@ -59,14 +63,19 @@ def _finite_float(text):
     return value
 
 
-def _contains_nul(value) -> bool:
-    """Any string (or key) with a NUL, at any depth. Iterative: json.loads accepts
-    nesting deeper than Python's recursion limit allows a recursive walk."""
+# NUL can't be stored in PostgreSQL text; a lone UTF-16 surrogate (\ud800 in JSON)
+# is no character at all and can't be encoded as UTF-8 for either database
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _has_unstorable_text(value) -> bool:
+    """Any string (or key) at any depth with NUL or a lone surrogate. Iterative:
+    json.loads accepts nesting deeper than Python's recursion limit allows a recursive walk."""
     pending = [value]
     while pending:
         item = pending.pop()
         if isinstance(item, str):
-            if "\x00" in item:
+            if _UNSTORABLE.search(item):
                 return True
         elif isinstance(item, dict):
             pending.extend(item.keys())
@@ -78,7 +87,7 @@ def _contains_nul(value) -> bool:
 
 def json_body() -> dict:
     """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON
-    types, and NUL characters, which PostgreSQL can't store in text)."""
+    types, and text that can't be stored: NUL characters and lone surrogates)."""
     if not request.is_json:
         raise ApiError(415, tr("Expected a JSON request body (Content-Type: application/json)."))
     try:
@@ -88,8 +97,8 @@ def json_body() -> dict:
         raise ApiError(400, tr("Malformed JSON.")) from None
     if not isinstance(data, dict):
         raise ApiError(400, tr("Expected a JSON object."))
-    if _contains_nul(data):
-        raise ApiError(400, tr("Text must not contain NUL characters."))
+    if _has_unstorable_text(data):
+        raise ApiError(400, tr("Text must not contain NUL characters or invalid Unicode."))
     return data
 
 
@@ -145,6 +154,9 @@ def registration_open() -> bool:
     return active_event_id() is not None and bool(settings()["event_code"])
 
 
+EVENT_CODE_WINDOW = 900  # seconds
+
+
 def check_event_code(value, *, raise_when_limited: bool) -> bool:
     """Compare a submitted event code; wrong codes count towards the per-IP limit.
 
@@ -160,7 +172,9 @@ def check_event_code(value, *, raise_when_limited: bool) -> bool:
         return False
     # Reserve an attempt first (atomically) and give it back if the code is right,
     # so parallel guesses can never exceed the limit.
-    wait, attempt = sec.consume("event_code_fail", sec.ip_hash(), conf("EVENT_CODE_MAX_PER_IP"), 900)
+    key = sec.ip_hash()
+    limit = conf("EVENT_CODE_MAX_PER_IP")
+    wait, attempt = sec.consume("event_code_fail", key, limit, EVENT_CODE_WINDOW)
     if wait:
         if raise_when_limited:
             raise ApiError(429, tr("Too many wrong event codes. Please try again in {wait}.", wait=human_wait(wait)),
@@ -169,7 +183,22 @@ def check_event_code(value, *, raise_when_limited: bool) -> bool:
     if len(code) <= 20 and hmac.compare_digest(code.encode(), expected.encode()):
         sec.release(attempt)
         return True
+    audit_event_code_lockout(key, limit)
     return False
+
+
+def audit_event_code_lockout(key: str, limit: int) -> None:
+    """Audit a network that used up its event-code attempts, once per lockout.
+    Checked and recorded under the write lock: parallel final guesses all see
+    the full count, but only the first one gets the marker."""
+    if sec.attempts("event_code_fail", key, EVENT_CODE_WINDOW) < limit:
+        return  # cheap check without the lock
+    event_id = active_event_id()
+    with write_transaction():
+        if (sec.attempts("event_code_fail", key, EVENT_CODE_WINDOW) >= limit
+                and sec.mark_once("event_code_lockout", key, EVENT_CODE_WINDOW)):
+            sec.record_audit("anonymous", "event_code.limit_reached", network=sec.anonymized_ip(),
+                             attempts=limit, event_id=event_id)
 
 
 def is_admin_request() -> bool:
@@ -278,11 +307,41 @@ def user_summary(row) -> dict:
 # --- participants --------------------------------------------------------
 
 def issue_token(user_id: int) -> str:
+    """A new device token; call inside ``write_transaction()`` (does not commit)."""
     token = sec.new_secret()
-    db = get_db()
-    db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)", (sec.sha256(token), user_id))
-    db.commit()
+    get_db().execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)",
+                     (sec.sha256(token), user_id))
     return token
+
+
+def revoke_tokens(user_id: int, *, only: str | None = None, keep: str | None = None) -> int:
+    """Delete device tokens of a user (just ``only``, or all but ``keep``; hashes).
+    Inside ``write_transaction()``. The legacy ``users.token_hash`` copy of a revoked
+    token is replaced too, so no migration can ever bring it back."""
+    db = get_db()
+    if only is not None:
+        hashes = [only]
+    else:
+        hashes = [r["token_hash"] for r in db.execute(
+            "SELECT token_hash FROM user_tokens WHERE user_id = ? AND token_hash != ?",
+            (user_id, keep or ""))]
+    for token_hash in hashes:
+        db.execute("DELETE FROM user_tokens WHERE token_hash = ? AND user_id = ?", (token_hash, user_id))
+        # NOT NULL UNIQUE column: a fresh random value that no device holds
+        db.execute("UPDATE users SET token_hash = ? WHERE id = ? AND token_hash = ?",
+                   ("revoked:" + sec.new_secret(), user_id, token_hash))
+    return len(hashes)
+
+
+def current_token_hash() -> str:
+    return sec.sha256(request.headers.get("X-User-Token", ""))
+
+
+def token_still_valid(db, user_id: int) -> bool:
+    """Re-check the caller's token under the write lock: another device may have
+    logged this one out since ``require_user()``."""
+    return db.execute("SELECT 1 FROM user_tokens WHERE token_hash = ? AND user_id = ?",
+                      (current_token_hash(), user_id)).fetchone() is not None
 
 
 def current_user():
@@ -534,6 +593,7 @@ def release_seat():
 # --- one-time login links ------------------------------------------------
 
 def create_login_code(user_id: int) -> tuple[str, str]:
+    """Call inside ``write_transaction()`` (does not commit)."""
     code = sec.new_secret()
     now = time.time()
     expires = now + conf("LOGIN_CODE_HOURS") * 3600
@@ -541,7 +601,6 @@ def create_login_code(user_id: int) -> tuple[str, str]:
     db.execute("DELETE FROM login_codes WHERE expires_at < ?", (now,))
     db.execute("INSERT INTO login_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)",
                (sec.sha256(code), user_id, expires))
-    db.commit()
     return code, utc_iso(datetime.fromtimestamp(expires, timezone.utc).replace(tzinfo=None))
 
 
@@ -567,8 +626,38 @@ def _login_code_attempt():
 def my_login_link():
     user = require_user()
     enforce_limit("login_link", str(user["id"]), 10, 3600, tr("Too many login links requested."))
-    code, expires = create_login_code(user["id"])
+    with write_transaction() as db:
+        # a link created by a device that was just logged out would let it back in
+        if not token_still_valid(db, user["id"]):
+            raise ApiError(401, tr("Please register or log in first."))
+        code, expires = create_login_code(user["id"])
     return jsonify(code=code, expires_at=expires)
+
+
+@bp.post("/me/logout")
+def my_logout():
+    """Log this device out: its token stops working (not only forgotten by the browser)."""
+    user = require_user()
+    with write_transaction():
+        revoke_tokens(user["id"], only=current_token_hash())
+    return jsonify(ok=True)
+
+
+@bp.post("/me/logout-others")
+def my_logout_others():
+    """Log out every other device (e.g. a lost phone) and void unused login links,
+    which such a device could have created."""
+    user = require_user()
+    # one transaction with the same lock as /login and /me/login-link, so a code
+    # that is being redeemed or created right now can't outlive this
+    with write_transaction() as db:
+        if not token_still_valid(db, user["id"]):
+            raise ApiError(401, tr("Please register or log in first."))
+        devices = revoke_tokens(user["id"], keep=current_token_hash())
+        links = db.execute("DELETE FROM login_codes WHERE user_id = ?", (user["id"],)).rowcount
+        sec.record_audit(f"participant:{user['id']}", "user.logged_out_elsewhere", **user_summary(user),
+                         devices=devices, login_links=links)
+    return jsonify(ok=True, devices=devices)
 
 
 @bp.post("/login/preview")
@@ -587,12 +676,13 @@ def login_with_code():
     row = lookup_login_code(json_body().get("code"))
     if row is None:
         raise ApiError(400, tr("This login link is invalid, expired or has already been used."))
-    db = get_db()
-    deleted = db.execute("DELETE FROM login_codes WHERE code_hash = ?", (row["code_hash"],)).rowcount
-    db.commit()
-    if not deleted:  # used concurrently
-        raise ApiError(400, tr("This login link has already been used."))
-    token = issue_token(row["id"])
+    # using up the code and issuing the token happen under one lock: a concurrent
+    # "log out other devices" either voids the code first or revokes the new token
+    with write_transaction() as db:
+        deleted = db.execute("DELETE FROM login_codes WHERE code_hash = ?", (row["code_hash"],)).rowcount
+        if not deleted:  # used or voided concurrently
+            raise ApiError(400, tr("This login link has already been used."))
+        token = issue_token(row["id"])
     return jsonify(token=token, user=user_dict(get_user(row["id"])))
 
 
@@ -667,8 +757,8 @@ def admin_login():
     name = clean_actor_name(data.get("name"))
     if not name:
         raise ApiError(400, tr("Please enter your name. It shows in the audit log."))
-    ip = sec.client_ip()
-    key = sec.ip_hash(ip)
+    key = sec.ip_hash()
+    network = sec.anonymized_ip()  # the audit log keeps no full addresses
     window = conf("ADMIN_LOGIN_WINDOW_MINUTES") * 60
     # Reserve an attempt in both buckets before checking the password (atomic, so
     # parallel guesses cannot exceed the limits); a successful login gives them back.
@@ -682,13 +772,15 @@ def admin_login():
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
     password = str(data.get("password") or "")
-    if not hmac.compare_digest(password.encode(), expected.encode()):
-        sec.audit("anonymous", "admin.login_failed", ip=ip, name=name)
+    # compare digests, so the comparison takes the same time whatever the lengths
+    if not hmac.compare_digest(sec.sha256(password), sec.sha256(expected)):
+        sec.audit("anonymous", "admin.login_failed", network=network, name=name)
         raise ApiError(401, tr("Wrong password."))
     sec.release(ip_attempt)
     sec.release(global_attempt)
     token = sec.create_admin_session(name)
-    sec.audit(name, "admin.login", ip=ip)
+    sec.audit(name, "admin.login", network=network)
+    sec.prune_audit_log()
     resp = jsonify(ok=True, actor=name)
     sec.set_admin_cookie(resp, token)
     return resp
@@ -724,6 +816,7 @@ def admin_session():
 @bp.get("/admin/audit")
 @admin_required
 def admin_audit():
+    sec.prune_audit_log()
     return jsonify(entries=sec.audit_entries())
 
 
@@ -834,8 +927,9 @@ def admin_login_link(user_id):
     user = get_user(user_id)
     if user["event_id"] != active_event_id():
         raise ApiError(409, tr("Login links only work for participants of the active event."))
-    code, expires = create_login_code(user_id)
-    sec.audit(actor(), "user.login_link_created", **user_summary(user))
+    with write_transaction():
+        code, expires = create_login_code(user_id)
+        sec.record_audit(actor(), "user.login_link_created", **user_summary(user))
     return jsonify(code=code, expires_at=expires)
 
 
