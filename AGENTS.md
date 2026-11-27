@@ -28,8 +28,9 @@ Requirements from the owner: **no Java**, tests and README required.
   override that builds from the checkout instead.
 - CI: `.github/workflows/tests.yml` (every branch push; SQLite on 3.11/3.13 and Postgres 17) and
   `docker.yml` (PRs: build only; a **published release** whose tag is on `main`: checks that,
-  calls tests.yml, then pushes a multi-arch image `:X.Y.Z`, `:X.Y`, `:X` to GHCR, and `:latest` only
-  when GitHub's `releases/latest` is this release).
+  calls tests.yml, then pushes a multi-arch image `:X.Y.Z`, `:X.Y`, `:X` to GHCR; a separate job
+  in the global `docker-latest` concurrency group then retags GitHub's current `releases/latest`
+  as `:latest` (convergent, so races and cancelled queued runs can't roll it back).
   The owner wants images published **only on releases**, never on pushes to main. Keep actions
   on their Node 24 majors (Node 20 actions trigger deprecation warnings). Lint workflows with
   `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest`. The repo is public; after

@@ -123,9 +123,13 @@ def test_compose_pulls_the_published_image_and_the_override_builds_it():
     assert "needs: tests" in workflow and "needs: on-main" in workflow
     assert "git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main" in workflow
     assert "branches: [main]" not in workflow  # a push to main publishes nothing
-    # :latest only for GitHub's "Latest" release, never metadata-action's automatic one
-    assert "latest=${{ steps.latest.outputs.value == 'true' }}" in workflow
-    assert "releases/latest" in workflow
+    # :latest never comes from metadata-action's automatic rule, only from one serialised job
+    # that copies GitHub's Latest release (a 404 = only pre-releases so far, not an error)
+    assert "latest=false" in workflow
+    latest_job = workflow.split("\n  latest:\n", 1)[1]
+    assert "group: docker-latest" in latest_job and "cancel-in-progress: false" in latest_job
+    assert "releases/latest" in latest_job and "imagetools create --tag \"$IMAGE:latest\"" in latest_job
+    assert "No stable release yet" in latest_job
 
 
 def test_image_runs_unprivileged_and_leaves_private_files_out():

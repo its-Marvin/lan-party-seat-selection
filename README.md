@@ -412,8 +412,10 @@ without publishing it.
 
 A new image is published only when a **GitHub release** is published, and only if its tag points to
 a commit on `main`. The workflow runs the tests first. A release `v1.2.3` publishes `:1.2.3`,
-`:1.2` and `:1`, plus `:latest` if GitHub marks it as the latest release (so a fix for an older
-version line never moves `:latest` backwards). A pre-release publishes only its own tag. Pushes to `main` publish
+`:1.2` and `:1`. Then `:latest` is pointed at the image of whatever GitHub marks as the latest
+release, one run at a time, so neither a fix for an older version line nor two releases published
+at once can move it backwards. A pre-release publishes only its own tag. Release tags must be
+semantic versions (`v1.2.3`). Pushes to `main` publish
 nothing.
 
 ## Deployment notes
