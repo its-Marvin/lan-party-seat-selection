@@ -11,12 +11,15 @@ import unicodedata
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+from . import appsettings
 from . import events as ev
 from . import layout as lay
+from . import mail
+from . import notify
 from . import security as sec
 from . import settings as cfg
 from . import themes as th
-from .i18n import N_, tr
+from .i18n import N_, request_language, tr
 from .db import IntegrityError, get_db, read_snapshot, utc_now, write_transaction
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -103,7 +106,8 @@ def json_body() -> dict:
 
 
 def conf(key):
-    return current_app.config[key]
+    """A setting: saved on the admin pages (appsettings), else app.config / environment."""
+    return appsettings.config_value(key)
 
 
 def human_wait(seconds: int) -> str:
@@ -202,18 +206,24 @@ def audit_event_code_lockout(key: str, limit: int) -> None:
 
 
 def is_admin_request() -> bool:
-    return bool(conf("ADMIN_PASSWORD")) and sec.current_admin_session() is not None
+    return sec.admin_enabled() and sec.current_admin_session() is not None
 
 
 # --- reservation expiry ----------------------------------------------------
 
 @bp.before_request
 def release_expired_reservations():
-    # only the active event's reservations run out; archived events stay as they ended
+    # unconfirmed addresses run out everywhere; reservations only in the active event
+    # (archived events stay as they ended)
+    expire_unconfirmed()
     event_id = active_event_id()
-    if event_id is None:
-        return
-    hours = settings()["reservation_hours"]
+    if event_id is not None:
+        expire_reservations(event_id)
+
+
+def expire_reservations(event_id: int) -> None:
+    """Release unpaid seats whose payment window has run out (also run by jobs.py)."""
+    hours = event_settings(event_id)["reservation_hours"]
     if hours <= 0:
         return
     expired_sql = ("SELECT id, name, email, seat FROM users WHERE event_id = ? AND paid = 0 "
@@ -239,6 +249,24 @@ def release_expired_reservations():
         for r in released:
             sec.record_audit("system", "reservation.expired", user_id=r["id"], name=r["name"],
                              email=r["email"], seat=r["seat"], after_hours=hours, event_id=event_id)
+
+
+UNCONFIRMED_EXPIRED_SQL = (
+    "SELECT id, event_id, name, email, seat FROM users WHERE paid = 0 "
+    "AND email_confirmed_at IS NULL AND confirm_until IS NOT NULL AND confirm_until <= ?")
+
+
+def expire_unconfirmed() -> None:
+    """Delete registrations whose email address wasn't confirmed in time, in every
+    event (one that ended before the deadline too); their seats become free and the
+    address can register again. Also run by jobs.py."""
+    if not get_db().execute(UNCONFIRMED_EXPIRED_SQL + " LIMIT 1", (utc_now(),)).fetchone():
+        return
+    with write_transaction() as db:
+        for r in db.execute(UNCONFIRMED_EXPIRED_SQL, (utc_now(),)).fetchall():
+            db.execute("DELETE FROM users WHERE id = ? AND email_confirmed_at IS NULL AND paid = 0", (r["id"],))
+            sec.record_audit("system", "registration.unconfirmed_expired", user_id=r["id"], name=r["name"],
+                             email=r["email"], seat=r["seat"], event_id=r["event_id"])
 
 
 # --- serialisation -------------------------------------------------------
@@ -281,10 +309,23 @@ def user_dict(row, with_email=True) -> dict:
         "paid_at": row["paid_at"],
         "paid_amount_cents": row["paid_amount_cents"],
         "reserved_until": reserved_until(row),
+        "email_confirmed": not pending_confirmation(row),
+        "confirm_until": utc_iso(datetime.fromisoformat(row["confirm_until"]))
+        if pending_confirmation(row) else None,
     }
     if with_email:
         data["email"] = row["email"]
     return data
+
+
+def pending_confirmation(row) -> bool:
+    """Registered with mail enabled and the address isn't confirmed yet."""
+    return bool(row["confirm_until"]) and not row["email_confirmed_at"] and not row["paid"]
+
+
+def payment_or_none(row) -> dict | None:
+    """Payment details once there is a seat and (with mail) a confirmed address."""
+    return payment_info(row) if row["seat"] and not pending_confirmation(row) else None
 
 
 def payment_info(user_row) -> dict:
@@ -434,17 +475,24 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False, admin
             ip_key = None  # keep the IP of the original reservation
         now = utc_now()
         try:
+            # an unconfirmed registration holds its seat until confirm_until; the
+            # payment window only starts once the address is confirmed
             db.execute(
                 "UPDATE users SET seat = ?, seat_selected_at = ?, "
-                "reserved_at = CASE WHEN reserved_at IS NULL OR reserved_at <= ? "
-                "                   THEN ? ELSE reserved_at END, "
+                "reserved_at = CASE WHEN ? = 1 THEN NULL "
+                "                   WHEN reserved_at IS NULL OR reserved_at <= ? THEN ? "
+                "                   ELSE reserved_at END, "
                 "reserved_ip_hash = COALESCE(?, reserved_ip_hash) "
                 "WHERE id = ?",
-                (seat, now, cutoff, now, ip_key, user_id),
+                (seat, now, int(pending_confirmation(user)), cutoff, now, ip_key, user_id),
             )
         except IntegrityError:
             raise ApiError(409, tr("Seat {seat} is already taken.", seat=seat)) from None
-        return _audit_seat_change(db, user, by_participant, admin)
+        after = _audit_seat_change(db, user, by_participant, admin)
+        if (mail.enabled() and after["seat"] and not after["paid"] and after["reserved_at"]
+                and after["reserved_at"] != user["reserved_at"]):
+            notify.payment_request(after, event)   # a new payment window has started
+        return after
 
 
 def _audit_seat_change(db, before, by_participant: bool, admin: str | None):
@@ -469,6 +517,7 @@ def info():
     data["registration_open"] = registration_open()
     data["seat_count"] = len(lay.seat_ids(lay.load(event_id))) if event_id is not None else 0
     data["login_link_hours"] = conf("LOGIN_CODE_HOURS")
+    data["mail_enabled"] = mail.enabled()
     # the theme /theme.css resolves to (falls back like it), so open pages can follow changes
     data["theme"] = (th.get(data["theme"]) or th.get(th.DEFAULT_THEME)).id
     data["upcoming"] = [
@@ -548,29 +597,39 @@ def register():
     if len(email) > 200 or not EMAIL_RE.match(email):
         raise ApiError(400, tr("Please enter a valid email address."))
     token = sec.new_secret()
+    # with mail, the address must be confirmed within EMAIL_CONFIRM_MINUTES
+    confirm_code = sec.new_secret() if mail.enabled() else None
     try:
         with write_transaction() as db:
             event_id = require_active_event()
-            if ev.status(cfg.load(event_id)) != "active":  # dates changed in the meantime
+            event = cfg.load(event_id)
+            if ev.status(event) != "active":  # dates changed in the meantime
                 raise ApiError(403, tr("There is no event open for registration right now."))
             user_id = db.insert(
-                "INSERT INTO users (event_id, name, email, token_hash) VALUES (?, ?, ?, ?)",
-                (event_id, name, email, sec.sha256(token)),
+                "INSERT INTO users (event_id, name, email, token_hash, lang, confirm_code_hash, confirm_until) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (event_id, name, email, sec.sha256(token), request_language(),
+                 sec.sha256(confirm_code) if confirm_code else None,
+                 utc_now(conf("EMAIL_CONFIRM_MINUTES") / 60) if confirm_code else None),
             )
             db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)",
                        (sec.sha256(token), user_id))
+            if confirm_code:
+                notify.confirmation(db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone(),
+                                    event, confirm_code)
     except IntegrityError:
         raise ApiError(
             409, tr("This email address is already registered. Open a login link from a device "
                     "where you are logged in, or ask an admin for one.")
         ) from None
-    return jsonify(token=token, user=user_dict(get_user(user_id))), 201
+    mail.flush_soon()
+    return jsonify(token=token, user=user_dict(get_user(user_id)), confirmation_required=bool(confirm_code)), 201
 
 
 @bp.get("/me")
 def me():
     user = require_user()
-    return jsonify(user=user_dict(user), payment=payment_info(user) if user["seat"] else None)
+    return jsonify(user=user_dict(user), payment=payment_or_none(user))
 
 
 @bp.post("/me/seat")
@@ -580,7 +639,8 @@ def choose_seat():
     if seat is None:
         raise ApiError(400, tr("This seat does not exist."))
     updated = assign_seat(user["id"], seat, by_participant=True)
-    return jsonify(user=user_dict(updated), payment=payment_info(updated))
+    mail.flush_soon()
+    return jsonify(user=user_dict(updated), payment=payment_or_none(updated))
 
 
 @bp.delete("/me/seat")
@@ -655,9 +715,122 @@ def my_logout_others():
             raise ApiError(401, tr("Please register or log in first."))
         devices = revoke_tokens(user["id"], keep=current_token_hash())
         links = db.execute("DELETE FROM login_codes WHERE user_id = ?", (user["id"],)).rowcount
+        # the personal link from the payment mail is replaced, and the new one mailed
+        new_link = False
+        fresh = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        if fresh["access_code_hash"]:
+            code = sec.new_secret() if mail.enabled() else None
+            db.execute("UPDATE users SET access_code_hash = ? WHERE id = ?",
+                       (sec.sha256(code) if code else None, user["id"]))
+            if code:
+                notify.new_access_link(fresh, cfg.load(fresh["event_id"]), code)
+                new_link = True
         sec.record_audit(f"participant:{user['id']}", "user.logged_out_elsewhere", **user_summary(user),
-                         devices=devices, login_links=links)
-    return jsonify(ok=True, devices=devices)
+                         devices=devices, login_links=links, personal_link_replaced=new_link)
+    mail.flush_soon()
+    return jsonify(ok=True, devices=devices, new_link_sent=new_link)
+
+
+# --- email confirmation and personal links (mail enabled) ------------------------------
+
+CONFIRM_INVALID = N_("This confirmation link is invalid or has expired. Registrations that aren't confirmed "
+                     "in time are deleted; you can simply register again.")
+
+
+def _code_shape_ok(code) -> bool:
+    return isinstance(code, str) and 10 <= len(code) <= 100
+
+
+@bp.post("/confirm")
+def confirm_email():
+    """Confirm the address with the code from the confirmation mail. ``login``
+    also logs this device in (when it isn't logged in as someone else)."""
+    _login_code_attempt()
+    data = json_body()
+    code, event_id = data.get("code"), active_event_id()
+    if not _code_shape_ok(code) or event_id is None:
+        raise ApiError(400, tr(CONFIRM_INVALID))
+    token = None
+    with write_transaction() as db:
+        event = cfg.load(event_id)
+        if ev.status(event) != "active":     # the event ended while this request waited
+            raise ApiError(400, tr(CONFIRM_INVALID))
+        user = db.execute(
+            "SELECT * FROM users WHERE confirm_code_hash = ? AND event_id = ? AND email_confirmed_at IS NULL "
+            "AND confirm_until > ?", (sec.sha256(code), event_id, utc_now())).fetchone()
+        if user is None:
+            raise ApiError(400, tr(CONFIRM_INVALID))
+        now = utc_now()
+        # the payment window starts now (a held seat had none so far)
+        db.execute(
+            "UPDATE users SET email_confirmed_at = ?, confirm_code_hash = NULL, "
+            "reserved_at = CASE WHEN seat IS NOT NULL AND paid = 0 THEN ? ELSE reserved_at END WHERE id = ?",
+            (now, now, user["id"]))
+        user = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        if user["seat"] and not user["paid"]:
+            notify.payment_request(user, event)
+        if data.get("login") is True:
+            token = issue_token(user["id"])
+    mail.flush_soon()
+    return jsonify(user=user_dict(user), token=token, payment=payment_or_none(user))
+
+
+@bp.post("/me/confirmation")
+def resend_confirmation():
+    """Send the confirmation mail again (same deadline, new link)."""
+    user = require_user()
+    if not pending_confirmation(user):
+        raise ApiError(409, tr("Your email address is already confirmed."))
+    if not mail.enabled():
+        raise ApiError(503, tr("Sending mails is not configured on this server."))
+    enforce_limit("confirm_mail", str(user["id"]), 3, 3600, tr("Too many confirmation mails requested."))
+    code = sec.new_secret()
+    with write_transaction() as db:
+        updated = db.execute(
+            "UPDATE users SET confirm_code_hash = ? WHERE id = ? AND email_confirmed_at IS NULL AND confirm_until > ?",
+            (sec.sha256(code), user["id"], utc_now())).rowcount
+        if not updated:
+            raise ApiError(400, tr(CONFIRM_INVALID))
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        notify.confirmation(row, cfg.load(row["event_id"]), code)
+    mail.flush_soon()
+    return jsonify(ok=True, user=user_dict(row))
+
+
+def lookup_access_code(code):
+    """The participant of the active event whose personal link this is."""
+    event_id = active_event_id()
+    if not _code_shape_ok(code) or event_id is None:
+        return None
+    return get_db().execute("SELECT * FROM users WHERE access_code_hash = ? AND event_id = ?",
+                            (sec.sha256(code), event_id)).fetchone()
+
+
+ACCESS_INVALID = N_("This personal link no longer works. It is replaced when you log out your other devices, "
+                    "and it ends with the event.")
+
+
+@bp.post("/access/preview")
+def access_preview():
+    _login_code_attempt()
+    row = lookup_access_code(json_body().get("code"))
+    if row is None:
+        raise ApiError(400, tr(ACCESS_INVALID))
+    return jsonify(user_id=row["id"], name=row["name"])
+
+
+@bp.post("/access")
+def access_login():
+    """Log a device in with the personal link (reusable, unlike login links)."""
+    _login_code_attempt()
+    code = json_body().get("code")
+    with write_transaction():
+        row = lookup_access_code(code)   # under the lock: a concurrent logout-others replaces it
+        # the per-request event cache predates the lock: the event may have ended since
+        if row is None or ev.status(cfg.load(row["event_id"])) != "active":
+            raise ApiError(400, tr(ACCESS_INVALID))
+        token = issue_token(row["id"])
+    return jsonify(token=token, user=user_dict(row))
 
 
 @bp.post("/login/preview")
@@ -691,7 +864,7 @@ def login_with_code():
 def admin_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if not conf("ADMIN_PASSWORD"):
+        if not sec.admin_enabled():
             raise ApiError(401, tr("Admin login required."))
         # background polling (X-Background: 1) must not count as admin activity,
         # or an unattended tab would never reach the idle timeout
@@ -748,8 +921,7 @@ def clean_actor_name(value) -> str:
 
 @bp.post("/admin/login")
 def admin_login():
-    expected = conf("ADMIN_PASSWORD")
-    if not expected:
+    if not sec.admin_enabled():
         raise ApiError(503, tr("Admin login is disabled: ADMIN_PASSWORD is not set."))
     data = json_body()
     # every audit entry must say which admin did it; checked before the rate limit,
@@ -772,14 +944,21 @@ def admin_login():
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
     password = str(data.get("password") or "")
-    # compare digests, so the comparison takes the same time whatever the lengths
-    if not hmac.compare_digest(sec.sha256(password), sec.sha256(expected)):
+    login = sec.authenticate_admin(name, password)
+    if login is None:
         sec.audit("anonymous", "admin.login_failed", network=network, name=name)
-        raise ApiError(401, tr("Wrong password."))
+        # the same answer for an unknown name and a wrong password
+        raise ApiError(401, tr("Wrong name or password."))
+    name, admin_id, verified = login  # an account's name as stored (its spelling)
+    # issued only if that password is still the current one (another worker may have
+    # changed it since it was checked; scrypt runs outside the lock)
+    token = sec.create_admin_session(name, admin_id, verified)
+    if token is None:
+        sec.audit("anonymous", "admin.login_failed", network=network, name=name, reason="password changed")
+        raise ApiError(401, tr("Wrong name or password."))
     sec.release(ip_attempt)
     sec.release(global_attempt)
-    token = sec.create_admin_session(name)
-    sec.audit(name, "admin.login", network=network)
+    sec.audit(name, "admin.login", network=network, mode="account" if admin_id else "start")
     sec.prune_audit_log()
     resp = jsonify(ok=True, actor=name)
     sec.set_admin_cookie(resp, token)
@@ -788,7 +967,7 @@ def admin_login():
 
 @bp.post("/admin/logout")
 def admin_logout():
-    session = sec.current_admin_session() if conf("ADMIN_PASSWORD") else None
+    session = sec.current_admin_session() if sec.admin_enabled() else None
     if session is not None:
         sec.end_admin_session()
         sec.audit(session["actor"], "admin.logout")
@@ -809,7 +988,10 @@ def admin_logout_all():
 
 @bp.get("/admin/session")
 def admin_session():
-    session = sec.current_admin_session() if conf("ADMIN_PASSWORD") else None
+    # the admin pages poll this (X-Background: 1) to notice an ended session; that
+    # must not count as activity, or an open tab would never time out
+    refresh = request.headers.get("X-Background") != "1"
+    session = sec.current_admin_session(refresh=refresh) if sec.admin_enabled() else None
     return jsonify(admin=session is not None, actor=session["actor"] if session else None)
 
 
@@ -896,16 +1078,28 @@ def admin_set_paid(user_id):
     # reservation window. Only a real state change is applied (and audited).
     with write_transaction() as db:
         require_not_archived(user["event_id"])
-        amount = cfg.load(user["event_id"])["amount_cents"]
+        event = cfg.load(user["event_id"])
+        amount = event["amount_cents"]
         now = utc_now()
+        # a confirmed payment also settles an unconfirmed address: the admins vouch for it
         changed = db.execute(
             "UPDATE users SET paid = ?, paid_at = ?, paid_amount_cents = ?, "
             "reserved_at = CASE WHEN ? = 1 THEN reserved_at "
-            "                   WHEN seat IS NOT NULL THEN ? END "
+            "                   WHEN seat IS NOT NULL THEN ? END, "
+            "email_confirmed_at = CASE WHEN ? = 1 AND confirm_until IS NOT NULL "
+            "                          THEN COALESCE(email_confirmed_at, ?) ELSE email_confirmed_at END, "
+            "confirm_code_hash = CASE WHEN ? = 1 THEN NULL ELSE confirm_code_hash END "
             "WHERE id = ? AND paid != ?",
             (int(paid), now if paid else None, amount if paid else None,
-             int(paid), now, user_id, int(paid)),
+             int(paid), now, int(paid), now, int(paid), user_id, int(paid)),
         ).rowcount
+        if changed and paid and mail.enabled():
+            # seat confirmation with a personal link, so nobody needs an admin to get back in
+            code = sec.new_secret()
+            db.execute("UPDATE users SET access_code_hash = ? WHERE id = ?", (sec.sha256(code), user_id))
+            notify.payment_confirmed(db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone(),
+                                     event, code)
+    mail.flush_soon()
     if changed:
         sec.audit(actor(), "payment.confirmed" if paid else "payment.revoked", **user_summary(user))
     return jsonify(user=user_dict(get_user(user_id)))
@@ -918,6 +1112,7 @@ def admin_move(user_id):
     if "seat" not in data:
         raise ApiError(400, tr("'seat' is required (use null to free the seat)."))
     updated = assign_seat(user_id, data["seat"], admin=actor())
+    mail.flush_soon()
     return jsonify(user=user_dict(updated))
 
 
@@ -944,11 +1139,68 @@ def admin_remove(user_id):
     return jsonify(ok=True)
 
 
+def admin_settings_payload(s: dict, event_id: int) -> dict:
+    row = get_db().execute("SELECT value FROM settings WHERE key = ?", (JOBS_HEARTBEAT,)).fetchone()
+    return public_settings(s) | {
+        "event_id": event_id,
+        "payment_reminders": s["payment_reminders"],
+        "mail_enabled": mail.enabled(),
+        "scheduler_last_run": row["value"] if row else None,
+        "reminder_hours_before": conf("REMINDER_HOURS_BEFORE"),
+    }
+
+
+JOBS_HEARTBEAT = "_jobs_last_run"   # written by jobs.py on every run
+
+
+# --- messages to participants (mail enabled) ------------------------------------------
+
+AUDIENCES = {
+    # people whose address is confirmed (or who registered before confirmation existed)
+    "all": "1 = 1",
+    "open": "seat IS NOT NULL AND paid = 0",
+    "paid": "paid = 1",
+}
+REACHABLE = "(confirm_until IS NULL OR email_confirmed_at IS NOT NULL OR paid = 1)"
+
+
+@bp.post("/admin/messages")
+@admin_required
+def admin_send_message():
+    """Mail a message to the event's participants: everyone, open payments, or paid.
+    ``dry_run`` only counts the recipients."""
+    if not mail.enabled():
+        raise ApiError(409, tr("Sending mails is not configured on this server."))
+    data = json_body()
+    event_id = admin_event_id()
+    audience = data.get("audience")
+    if audience not in AUDIENCES:
+        raise ApiError(400, tr("'audience' must be one of: all, open, paid."))
+    sql = f"SELECT * FROM users WHERE event_id = ? AND {REACHABLE} AND {AUDIENCES[audience]} ORDER BY id"
+    if data.get("dry_run") is True:
+        return jsonify(recipients=len(get_db().execute(sql, (event_id,)).fetchall()))
+    subject = " ".join(str(data.get("subject") or "").split())
+    body = str(data.get("body") or "").strip()
+    if not 1 <= len(subject) <= 150:
+        raise ApiError(400, tr("The subject must be between 1 and 150 characters."))
+    if not 1 <= len(body) <= 5000:
+        raise ApiError(400, tr("The message must be between 1 and 5000 characters."))
+    with write_transaction() as db:
+        event = cfg.load(event_id)
+        rows = db.execute(sql, (event_id,)).fetchall()
+        for row in rows:
+            notify.message(row, event, subject, body)
+        sec.record_audit(actor(), "message.sent", event_id=event_id, audience=audience, subject=subject,
+                         recipients=len(rows))
+    mail.flush_soon()
+    return jsonify(recipients=len(rows))
+
+
 @bp.get("/admin/settings")
 @admin_required
 def admin_get_settings():
     event_id = admin_event_id()
-    return jsonify(public_settings(event_settings(event_id)) | {"event_id": event_id})
+    return jsonify(admin_settings_payload(event_settings(event_id), event_id))
 
 
 @bp.put("/admin/settings")
@@ -973,7 +1225,7 @@ def admin_put_settings():
             changes[key] = "(changed)" if key == "description" else [old, new]
     if changes:
         sec.audit(actor(), "settings.changed", event_id=event_id, **changes)
-    return jsonify(public_settings(after) | {"event_id": event_id})
+    return jsonify(admin_settings_payload(after, event_id))
 
 
 @bp.get("/admin/layout")

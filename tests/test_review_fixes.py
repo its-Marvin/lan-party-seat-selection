@@ -137,7 +137,7 @@ def test_expiry_audit_keeps_the_seat(app, admin):
     c.post("/api/me/seat", json={"seat": "A7"}, headers=h)
     with app.app_context():
         db = get_db()
-        db.execute("UPDATE users SET reserved_at = ?", (utc_now(-49),))
+        db.execute("UPDATE users SET reserved_at = ?", (utc_now(-169),))
         db.commit()
     c.get("/api/info")
     entry = next(e for e in admin.get("/api/admin/audit").get_json()["entries"] if e["action"] == "reservation.expired")

@@ -29,9 +29,13 @@ def server_templates() -> set[str]:
     found = set()
     for path in ROOT.glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("tr", "N_")
-                    and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
-                found.add(node.args[0].value)
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            # tr("…") and N_("…"); tr_in(lang, "…") for emails in a participant's language
+            position = {"tr": 0, "N_": 0, "tr_in": 1}.get(node.func.id)
+            if (position is not None and len(node.args) > position
+                    and isinstance(node.args[position], ast.Constant) and isinstance(node.args[position].value, str)):
+                found.add(node.args[position].value)
     return found
 
 
@@ -147,7 +151,10 @@ def test_dynamic_key_families_are_complete():
 
 def test_pages_load_the_translation_scripts_before_the_app(app):
     client = app.test_client()
-    for page, script in (("/", "app.js"), ("/admin", "admin.js")):
+    pages = (("/", "app.js"), ("/admin", "admin-overview.js"), ("/admin/events", "admin-events.js"),
+             ("/admin/settings", "admin-settings.js"), ("/admin/mail", "admin-mail.js"),
+             ("/admin/security", "admin-security.js"))
+    for page, script in pages:
         html = client.get(page).get_data(as_text=True)
         order = [html.index(name) for name in ("i18n.js", "locales/en-US.js", "locales/de-DE.js", "common.js", script)]
         assert order == sorted(order)

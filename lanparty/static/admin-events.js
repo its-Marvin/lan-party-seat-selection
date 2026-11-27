@@ -41,6 +41,7 @@ async function checkSession() {
   $("login-card").hidden = admin;
   $("admin-area").hidden = !admin;
   $("session-controls").hidden = !admin;
+  $("admin-nav").hidden = !admin;
   $("actor").textContent = actor ? t("admin.loggedInAs", { actor }) : "";
   if (!admin) {
     const unsaved = unsavedWork();
@@ -56,7 +57,6 @@ async function checkSession() {
   await loadSettings();
   if (!window.LayoutEditor.isDirty()) await window.LayoutEditor.load(currentEvent);
   await loadUsers();
-  await loadAudit();
 }
 
 /** Load the event list; keeps the selected event if it still exists. */
@@ -160,7 +160,6 @@ async function createEvent() {
     $("event-select").value = event.id;
     await switchEvent(event.id);
     showMessage($("event-msg"), t("admin.event.created"), "success");
-    await loadAudit();
   } catch (err) {
     showMessage($("event-msg"), err.message);
     if (err.status === 401) await checkSession();
@@ -185,7 +184,6 @@ async function deleteEvent() {
       await loadEvents();
     }
     showMessage($("event-msg"), t("admin.event.deleted", { name: e.event_name }), "success");
-    await loadAudit();
   } catch (err) {
     showMessage($("event-msg"), err.message);
     if (err.status === 401) await checkSession();
@@ -253,7 +251,10 @@ async function loadUsers() {
       }),
     }, t("admin.users.link"));
 
-    const status = !u.seat
+    const status = u.confirm_until
+      ? el("span", { class: "badge reserved", title: t("admin.users.unconfirmedTitle") },
+        t("admin.users.unconfirmedUntil", { date: formatDateTime(u.confirm_until) }))
+      : !u.seat
       ? el("span", { class: "badge" }, t("admin.users.badgeNoSeat"))
       : u.paid
         ? el("span", { class: "badge paid", title: u.paid_at ? t("admin.users.paidAt", { date: u.paid_at }) : "" },
@@ -306,39 +307,11 @@ async function act(fn) {
   }
   await loadEvents();
   await loadUsers();
-  await loadAudit();
 }
 
 // "?", "#" and "%" would let an address add headers (cc, body, …) to the mail link
 function mailtoHref(email) {
   return "mailto:" + email.replace(/[?#%&]/g, (ch) => encodeURIComponent(ch));
-}
-
-const SECURITY_ACTIONS = new Set(["admin.login_failed", "admin.logout_all", "user.login_link_created",
-  "event_code.limit_reached"]);
-
-function describeDetails(details) {
-  return Object.entries(details).map(([key, value]) => {
-    if (Array.isArray(value) && value.length === 2) return `${key}: ${JSON.stringify(value[0])} → ${JSON.stringify(value[1])}`;
-    if (value && typeof value === "object") return `${key}: ${JSON.stringify(value)}`;
-    return `${key}: ${value}`;
-  }).join(" · ");
-}
-
-async function loadAudit() {
-  const { entries } = await api("GET", "/admin/audit");
-  const rows = entries.map((e) => {
-    const sensitive = SECURITY_ACTIONS.has(e.action) ||
-      (e.action === "settings.changed" && ("paypal_address" in e.details || "amount_cents" in e.details));
-    return el("tr", {},
-      el("td", { class: "nowrap" }, e.ts + " UTC"),
-      el("td", {}, e.actor),
-      el("td", { class: sensitive ? "action-security" : "" }, e.action),
-      el("td", { class: "details" }, describeDetails(e.details)),
-    );
-  });
-  $("audit").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { colspan: 4, class: "muted" }, t("admin.audit.none")))]));
-  labelCells($("audit"));
 }
 
 async function loadSettings() {
@@ -358,10 +331,27 @@ async function loadSettings() {
     f.elements[key].value = settingsCache[key];
   }
   f.elements.amount.value = (settingsCache.amount_cents / 100).toFixed(2);
+  f.elements.payment_reminders.checked = settingsCache.payment_reminders;
+  renderMailOptions();
   renderThemeChoice();
   settingsDirty = false;
   settingsEventId = eventId;
   if (!settingsSaving) setSettingsLocked(false);
+}
+
+/** Reminders and messages need mail; without it their controls stay hidden. */
+function renderMailOptions() {
+  const on = settingsCache.mail_enabled;
+  $("reminder-row").hidden = !on;
+  $("message-card").hidden = !on;
+  const hint = $("reminder-hint");
+  hint.hidden = !on;
+  if (!on) return;
+  const last = settingsCache.scheduler_last_run;
+  const stale = !last || Date.now() - Date.parse(last.replace(" ", "T") + "Z") > 15 * 60000;
+  hint.textContent = t("admin.settings.remindersHelp", { hours: settingsCache.reminder_hours_before }) +
+    (stale ? " " + t("admin.settings.schedulerStopped") : "");
+  hint.classList.toggle("warning", stale && $("settings-form").elements.payment_reminders.checked);
 }
 
 function renderSettingsWarnings() {
@@ -404,6 +394,8 @@ async function onSaveSettings(event) {
   const msg = $("settings-msg");
   showMessage(msg, "");
   const payload = Object.fromEntries(new FormData(f).entries());
+  delete payload.payment_reminders;   // a checkbox: sent as true/false below, only where mail is on
+  if (!$("reminder-row").hidden) payload.payment_reminders = f.elements.payment_reminders.checked;
   // save to the event the form values belong to, never to one picked meanwhile
   const target = settingsEventId;
   if (target === null || target !== currentEvent) {
@@ -422,7 +414,6 @@ async function onSaveSettings(event) {
     await loadSettings();
     showMessage(msg, t("admin.settings.saved"), "success");
     await loadUsers();
-    await loadAudit();
   } catch (err) {
     if (err.status === 401) {
       await checkSession();           // keeps the form values, offers sign-in
@@ -452,7 +443,7 @@ window.addEventListener("beforeunload", (e) => {
   if (settingsDirty) { e.preventDefault(); e.returnValue = ""; }
 });
 document.addEventListener("admin-auth-required", () => checkSession().catch(() => {}));
-document.addEventListener("layout-saved", () => loadUsers().then(loadAudit).catch(() => {}));
+document.addEventListener("layout-saved", () => loadUsers().catch(() => {}));
 // the status of an event changes with the clock (registration opens, event ends)
 setInterval(() => {
   if ($("admin-area").hidden) return;
@@ -463,14 +454,53 @@ setInterval(() => {
   });
 }, 60000);
 
+/** Mail a message to a group of participants of the shown event (asks with the count first). */
+async function onSendMessage(event) {
+  event.preventDefault();
+  const f = event.target;
+  const msg = $("message-msg");
+  showMessage(msg, "");
+  const target = currentEvent;
+  const targetName = currentEventData()?.event_name ?? "";
+  const audience = f.audience.value;
+  const path = `/admin/messages?event=${encodeURIComponent(target)}`;
+  try {
+    const { recipients } = await api("POST", path, { audience, dry_run: true });
+    // the confirmation must name the event the message goes to: if another one was
+    // opened while the count loaded, stop instead of asking about the wrong event
+    if (currentEvent !== target) {
+      showMessage(msg, t("admin.message.eventChanged"), "info");
+      return;
+    }
+    if (!recipients) {
+      showMessage(msg, t("admin.message.nobody"), "info");
+      return;
+    }
+    const group = t(`admin.message.${audience}`);
+    if (!confirm(t("admin.message.confirm", { count: recipients, group, event: targetName }))) return;
+    f.querySelector("button").disabled = true;
+    const result = await api("POST", path, { audience, subject: f.subject.value, body: f.body.value });
+    f.reset();
+    showMessage(msg, t("admin.message.sent", { count: result.recipients }), "success");
+  } catch (err) {
+    showMessage(msg, err.message);
+    if (err.status === 401) await checkSession();
+  } finally {
+    f.querySelector("button").disabled = false;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-  document.title = t("admin.pageTitle");
+  document.title = t("admin.events.pageTitle");
+  markAdminNav();
   setSettingsLocked(true);   // unlocked once an event's values are in the form
   $("login-form").addEventListener("submit", onLogin);
   $("event-select").addEventListener("change", (e) => switchEvent(Number(e.target.value)));
   $("new-event").addEventListener("click", createEvent);
   $("delete-event").addEventListener("click", deleteEvent);
   $("settings-form").addEventListener("submit", onSaveSettings);
+  $("message-form").addEventListener("submit", onSendMessage);
+  $("settings-form").elements.payment_reminders.addEventListener("change", renderMailOptions);
   $("settings-form").addEventListener("input", () => (settingsDirty = true));
   $("theme-choice").addEventListener("change", renderThemeChoice);
   $("logout").addEventListener("click", async () => {
@@ -489,6 +519,5 @@ document.addEventListener("DOMContentLoaded", () => {
     $("settings-form").elements.event_code.value = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
     settingsDirty = true;
   });
-  $("refresh-audit").addEventListener("click", () => loadAudit().catch((err) => alert(err.message)));
   checkSession().catch((err) => showMessage($("login-msg"), err.message));
 });

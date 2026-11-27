@@ -129,7 +129,7 @@ def test_admin_logins_are_limited_per_ipv6_network(app, client):
 def test_admin_logins_log_only_the_network(app, client):
     admin_login(client, addr="2001:db8:abcd:12:1:2:3:4")
     client.post("/api/admin/login", json={"name": "Mallory", "password": "wrong"}, **ip("198.51.100.23"))
-    assert audit(app, "admin.login") == [{"network": "2001:db8:abcd::/48"}]
+    assert audit(app, "admin.login") == [{"network": "2001:db8:abcd::/48", "mode": "start"}]
     assert audit(app, "admin.login_failed") == [{"network": "198.51.100.0/24", "name": "Mallory"}]
     everything = " ".join(r["details"] for r in sql(app, "SELECT details FROM audit_log"))
     assert "198.51.100.23" not in everything and "1:2:3:4" not in everything
@@ -154,7 +154,7 @@ def test_reaching_the_event_code_limit_is_audited_once(app, client):
     assert len(entries) == 1
     assert entries[0]["network"] == "203.0.113.0/24" and entries[0]["attempts"] == limit
     # the admin page highlights it
-    assert '"event_code.limit_reached"' in (ROOT / "lanparty/static/admin.js").read_text()
+    assert '"event_code.limit_reached"' in (ROOT / "lanparty/static/admin-security.js").read_text()
 
 
 def test_old_audit_entries_are_deleted(app, client):
@@ -254,7 +254,7 @@ def test_unusual_but_valid_emails_still_work(client, email):
 
 
 def test_admin_mail_links_escape_the_address():
-    script = (ROOT / "lanparty/static/admin.js").read_text()
+    script = (ROOT / "lanparty/static/admin-events.js").read_text()
     assert "mailtoHref(u.email)" in script and "`mailto:${" not in script
 
 

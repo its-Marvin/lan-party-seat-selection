@@ -16,6 +16,9 @@ in one place, instead of in a group chat, a spreadsheet and a PayPal inbox.
   payment deadline.
 - See who sits where (with the event code), switch seats later (a payment moves along), and
   log in on other devices with a one-time link. No passwords to remember.
+- **With mail switched on:** confirm the email address with one click, get the payment details by
+  mail, a reminder before the deadline, and after paying a seat confirmation with a personal link
+  that logs you in on any device.
 - Works on phones, in light and dark mode, in English and German (see [Languages](#languages)).
 
 <p>
@@ -28,14 +31,20 @@ in one place, instead of in a group chat, a spreadsheet and a PayPal inbox.
 - **Participants and payments:** confirm payments, move people to other seats, remove them, or
   send someone a login link. The summary shows how many seats are taken and paid, and how much
   money came in and is still outstanding.
-- **Unpaid reservations expire** after a set time (48 hours by default), so nobody blocks a seat
-  without paying.
+- **Unpaid reservations expire** after a set time (one week by default), so nobody blocks a seat
+  without paying. Optionally, a reminder mail goes out 48 hours before.
+- **Optional mail**, set up on its own admin page: confirmation of new registrations, payment
+  requests, seat confirmations, reminders and messages to everyone, to open payments or to the
+  paid participants. Every mail comes in the colours of its event's theme.
 - **Seat layout editor:** drag groups of two-person tables and area elements into place on a grid.
   Seats are numbered automatically (A1, A2, …), and people keep their seats when you rearrange.
 - **Several events:** prepare the next LAN in advance. Each event opens on its registration date
   and is archived when it ends.
 - **Themes:** give each event its own look; a retro terminal theme is included, and you can add
   your own (see [THEMES.md](THEMES.md)).
+- **Security area:** an account for each admin (own name and password), see and end admin
+  sessions, void participants' links or log them out, adjust the rate limits, and a list of checks (HTTPS, proxy settings,
+  event codes, mail encryption, failed logins).
 - **Audit log:** every admin action is recorded with the admin's name, so a changed PayPal
   address or a confirmed payment can always be traced.
 
@@ -75,18 +84,23 @@ export ADMIN_PASSWORD='choose-a-strong-password'   # at least 12 characters
 ```
 
 Open <http://127.0.0.1:5000> for the public page and <http://127.0.0.1:5000/admin> for the admin area.
-For a real event, use [Docker](#docker) instead. To get started, log in as admin, fill in the event details, the PayPal address and the amount,
+For a real event, use [Docker](#docker) instead. To get started, log in as admin with any name and
+`ADMIN_PASSWORD`, create your own admin account under *Security* (after that, everyone logs in with
+their own account), then fill in the event details, the PayPal address and the amount,
 arrange the seat layout, and **set an event code**. Until there is a code, registration is closed.
 The first event is created automatically and is open straight away; see [Events](#events) for
 planning the next one.
 
 ## Configuration
 
-All configuration is done with environment variables:
+Most settings are made on the admin pages (see [Admins](#admins)). Environment variables set up
+the server; the ones marked ⚙ are only the **defaults** of settings that admins can change on
+`/admin/settings` or `/admin/security` (a saved value wins). Mail is configured only on
+`/admin/mail`.
 
 | Variable                | Default                      | Purpose |
 |-------------------------|------------------------------|---------|
-| `ADMIN_PASSWORD`        | *(empty → admin disabled)*   | Password for `/admin`. Must be at least 12 characters, or the app refuses to start. Changing it logs out all admins. |
+| `ADMIN_PASSWORD`        | *(empty → admin disabled)*   | Start password for `/admin`, used until the first admin account exists (see [Admins](#admins)). Must be at least 12 characters, or the app refuses to start. Changing it logs out all start-mode sessions. `python -m lanparty.manage reset-admin-password` deletes all admin accounts, so it works again. |
 | `ALLOW_WEAK_ADMIN_PASSWORD` | `0`                      | `1` allows a shorter password. **Local development only.** |
 | `DATABASE`              | `instance/lanparty.sqlite3`  | Path to the SQLite file. It is created automatically. |
 | `DATABASE_URL`          | *(empty → SQLite)*           | PostgreSQL connection URL, e.g. `postgresql://lanparty@db:5432/lanparty`. When set, it replaces `DATABASE`. The password can be part of the URL or come from `PGPASSWORD` (libpq's other `PG*` variables work too). The tables are created at startup. |
@@ -94,16 +108,18 @@ All configuration is done with environment variables:
 | `SESSION_COOKIE_SECURE` | `0`                          | Set this to `1` when you serve the app over HTTPS. The admin cookie is then only sent over HTTPS. |
 | `TRUSTED_PROXIES`       | `0`                          | Number of reverse proxies in front of the app. Needed so that rate limits see the real client IP (see [Deployment](#deployment-notes)). |
 | `MAX_CONTENT_LENGTH`    | `262144` (256 KB)            | Maximum request size in bytes. |
-| `ADMIN_LOGIN_MAX_PER_IP` / `ADMIN_LOGIN_MAX_GLOBAL` | `5` / `50` | Failed admin logins allowed per IP / in total, per `ADMIN_LOGIN_WINDOW_MINUTES` (`15`). "Per IP" limits count IPv6 clients per `/64` network (see [Security](#security)). |
-| `REGISTER_MAX_PER_IP`   | `10`                         | Registrations per IP per hour. Failed attempts count too. |
-| `MAX_PENDING_PER_IP`    | `4`                          | Unpaid seat reservations made from one IP at the same time. |
-| `LOGIN_CODE_MAX_PER_IP` | `20`                         | Login link attempts per IP per 15 minutes. |
-| `EVENT_CODE_MAX_PER_IP` | `10`                         | Wrong event codes per IP per 15 minutes. |
-| `LOGIN_CODE_HOURS`      | `168`                        | How long a one-time login link stays valid (default 7 days). |
-| `AUDIT_LOG_RETENTION_DAYS` | `365`                     | Audit log entries older than this are deleted (the log names participants and their emails). `0` keeps them forever. |
-| `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `60` / `12` | An admin session ends after this much inactivity, or after this total time at the latest. |
+| ⚙ `ADMIN_LOGIN_MAX_PER_IP` / `ADMIN_LOGIN_MAX_GLOBAL` | `5` / `50` | Failed admin logins allowed per IP / in total, per `ADMIN_LOGIN_WINDOW_MINUTES` (`15`). "Per IP" limits count IPv6 clients per `/64` network (see [Security](#security)). |
+| ⚙ `REGISTER_MAX_PER_IP` | `10`                         | Registrations per IP per hour. Failed attempts count too. |
+| ⚙ `MAX_PENDING_PER_IP` | `4`                          | Unpaid seat reservations made from one IP at the same time. |
+| ⚙ `LOGIN_CODE_MAX_PER_IP` | `20`                         | Login link attempts per IP per 15 minutes. |
+| ⚙ `EVENT_CODE_MAX_PER_IP` | `10`                         | Wrong event codes per IP per 15 minutes. |
+| ⚙ `LOGIN_CODE_HOURS` | `168`                        | How long a one-time login link stays valid (default 7 days). |
+| ⚙ `AUDIT_LOG_RETENTION_DAYS` | `365`                     | Audit log entries older than this are deleted (the log names participants and their emails). `0` keeps them forever. |
+| ⚙ `ADMIN_SESSION_IDLE_MINUTES` / `ADMIN_SESSION_MAX_HOURS` | `60` / `12` | An admin session ends after this much inactivity, or after this total time at the latest. |
 | `THEMES_DIR`            | `instance/themes`            | Folder with your own themes, one sub-folder per theme (see [THEMES.md](THEMES.md)). |
-| `TIMEZONE`              | *(server's local time)*      | IANA time zone of the event dates, e.g. `Europe/Berlin`. Decides when registration opens and when an event is archived. Set it when the server runs in UTC (e.g. in a container). |
+| ⚙ `PUBLIC_URL`          | *(empty)*                    | The site's address, e.g. `https://lan.example.com`; links in mails point there. Usually set on `/admin/settings`. |
+| `MAIL_BACKEND`          | *(empty)*                    | Development only: `console` writes mails to the log instead of sending them (the SMTP server can then stay empty). |
+| ⚙ `TIMEZONE` | *(server's local time)*      | IANA time zone of the event dates, e.g. `Europe/Berlin`. Decides when registration opens and when an event is archived. Set it when the server runs in UTC (e.g. in a container). |
 
 You don't need a `SECRET_KEY`: admin sessions are stored in the database, not in signed cookies.
 
@@ -112,7 +128,8 @@ Admins change everything else in the admin UI, separately for each event:
 - event name, when registration opens, start and end, location, description
 - the **theme** of the public page (see [THEMES.md](THEMES.md))
 - PayPal address (an email address or a `paypal.me/...` link) and the amount due in €
-- how long unpaid reservations are held (default 48 hours; 0 = forever)
+- how long unpaid reservations are held (default 168 hours = one week; 0 = forever), and whether
+  a payment reminder is mailed before the deadline (only shown when mail is on)
 - the **event code** (see below)
 - the seat layout (see below)
 
@@ -243,7 +260,8 @@ Limits: at most 60 groups, 60 tables per group, 1000 seats in total and 100 area
 ## How it works
 
 ### Participants
-1. Register with name and email. Each email address can only be registered once.
+1. Register with name and email. Each email address can only be registered once. With mail on,
+   a confirmation link goes to that address; see [Mail](#mail).
 2. The browser receives a random **device token** and keeps it in `localStorage`. The server
    stores only a SHA-256 hash of it.
 3. Click a free seat → confirm → the payment popup shows the amount, the PayPal address, a
@@ -253,7 +271,7 @@ Limits: at most 60 groups, 60 tables per group, 1000 seats in total and 100 area
    Unpaid participants can also release their seat; giving up a *paid* seat means a refund, so
    only an admin can do that.
 5. **Unpaid reservations expire.** If the payment isn't confirmed within the configured time
-   (default 48 hours), the seat is released automatically. The time counts from the first
+   (default one week), the seat is released automatically. The time counts from the first
    seat pick: switching seats, or releasing and picking again within that time, doesn't extend it.
 6. **Logging in on another device:** *Create login link* gives a one-time link (`/#login=…`).
    It works once, stays valid for 7 days (`LOGIN_CODE_HOURS`), and gives that device its own token. The device the link
@@ -261,7 +279,8 @@ Limits: at most 60 groups, 60 tables per group, 1000 seats in total and 100 area
    it asks before switching accounts. People who lost access can get a link from an admin.
 7. **Logging out:** *Log out* ends the login on this device; the token stops working on the server
    too, not only in the browser. *Log out other devices* ends every other login of that person
-   (for example on a lost phone) and voids their unused login links.
+   (for example on a lost phone) and voids their unused login links. With mail, their personal
+   link is replaced too, and the new one is mailed to them.
 
 Seat colours: free, reserved (payment pending), paid, your seat. The public seat map shows
 the tables and groups exactly as the admin arranged them. Hovering over a seat (or clicking a taken
@@ -281,24 +300,92 @@ browser (`localStorage`). Every theme has both modes.
 `THEMES_DIR`; [THEMES.md](THEMES.md) explains how to build one.
 
 ### Admins
-On `/admin`, after logging in with `ADMIN_PASSWORD`:
-- **Confirm payment** / **Mark unpaid**
-- **Move** a person to any free seat, or to "no seat" (they stay registered)
-- **Remove** a person completely. This frees their seat, and their email can register again.
-- **Login link:** creates a one-time login link for someone who lost access. Send it only to
-  that person's email address.
-- The summary line shows how many people registered, seats taken, seats paid, money received (the amounts actually confirmed, which a later fee change does not alter) and money outstanding (open reservations at the current fee).
-- **Seat layout editor** (see [Seat layout](#seat-layout)).
-- **Event** card: switch between events, create the next one, delete old ones (see [Events](#events)).
-- Settings form for the event, the payment and the reservation hold time.
-- **Audit log:** shows admin logins (including failed attempts, with the network they came
-  from), payment confirmations, moves, removals, login links, settings changes (the PayPal
-  address and amount are highlighted), automatically released reservations, and networks that
-  used up their attempts at guessing the event code (highlighted). Entries are deleted after
-  `AUDIT_LOG_RETENTION_DAYS` (365 days by default). Admins must enter their name when they
-  log in (a login without one is refused), so the log shows who did what even though everyone
-  shares one password.
-- **Log out everywhere** ends all admin sessions, e.g. after a laptop was lost.
+The admin area has one page per topic; all of them need an admin login.
+
+**Admin accounts:** every admin logs in with their own name and password. As long as no account
+exists (start mode, e.g. right after installing), `ADMIN_PASSWORD` works with any name; use it once
+to create the first account on `/admin/security`. From then on `ADMIN_PASSWORD` no longer works,
+every start-mode session ends, and further admins are added (or removed) there. Names are unique
+regardless of upper/lower case; passwords need at least 12 characters and are stored as scrypt
+hashes. Adding or removing an admin, and changing your own password, need your current password.
+Nobody can remove their own account, so there is always at least one. If nobody can log in any
+more, `python -m lanparty.manage reset-admin-password` on the server deletes every account and
+session, and `ADMIN_PASSWORD` works again.
+
+- **`/admin`**: login and an overview of the areas: the current event's numbers, mail status and
+  the number of security warnings.
+- **`/admin/events`**: everything about one event (pick it at the top):
+  - **Event** card: switch between events, create the next one, delete old ones (see [Events](#events)).
+  - **Participants:** *Confirm payment* / *Mark unpaid*, **move** a person to any free seat or to
+    "no seat", **remove** a person (frees the seat; the email can register again), and create a
+    one-time **login link** for someone who lost access. Unconfirmed registrations (mail on) are
+    marked with their deadline. The summary line shows registrations, seats taken and paid, money
+    received (the amounts actually confirmed) and outstanding (open reservations at the current fee).
+  - **Message participants** (mail on): a mail to everyone, to open payments or to the paid
+    participants, after showing how many people get it.
+  - **Seat layout editor** (see [Seat layout](#seat-layout)) and the event's **settings**.
+- **`/admin/settings`**: settings for all events: the site address (for links in mails), the time
+  zone of the event dates and how long login links stay valid.
+- **`/admin/mail`**: switch mail on and set the SMTP server, port, encryption, login and sender;
+  how long new registrations have to confirm their address (default 120 minutes) and how long
+  before the deadline reminders go out (default 48 hours). Shows the mail status, sends a test
+  mail, and lists mails that are waiting or failed (with a button to try failed ones again).
+- **`/admin/security`**:
+  - **Checks:** HTTPS and the secure cookie flag, the proxy setting, start mode or the number of
+    admin accounts (and passwords unchanged for a year), events without (or with short) event codes, mail encryption and failures, whether the
+    scheduler runs, failed admin logins and event-code lockouts in the last 24 hours, audit retention.
+  - **Admin accounts:** list (last login, created by whom), add, remove; **your password:** change
+    it (your other sessions end, other admins aren't affected).
+  - **Admin sessions:** who is logged in, since when, last activity; end single sessions. *Log out
+    everywhere* (in the header) ends all of them.
+  - **Participants' access** for one event: void unused login links, replace the personal links
+    (optionally mailing new ones), or log every participant out on every device.
+  - **Limits and timeouts:** rate limits, admin session lengths, audit log retention.
+  - **Audit log:** admin logins (including failed attempts, with the network they came from),
+    payments, moves, removals, login links, settings and configuration changes, messages sent,
+    released reservations and expired registrations, reminders, and networks that used up their
+    attempts at guessing the event code. Security-relevant entries are highlighted. Entries are
+    deleted after 365 days by default.
+
+## Mail
+
+Mail is optional and off by default; without it the app works as described above. An admin turns
+it on at `/admin/mail` (SMTP server, sender address, and the site address on `/admin/settings`,
+because the links in mails point there). From then on:
+
+1. **Confirming the address:** after registering, the participant gets a confirmation link. Their
+   seat is held meanwhile, but the payment window hasn't started. Registrations not confirmed
+   within 120 minutes are deleted and their seat becomes free. The page offers to send the mail
+   again (up to 3 times an hour; the deadline stays the same). The link also logs in the device
+   it is opened on, unless that browser belongs to someone else.
+2. **Payment request:** once the address is confirmed and the participant has a seat, the payment
+   window starts and a mail with event, seat, amount, PayPal address, payment reference and
+   deadline goes out.
+3. **Reminder** (if the event enables it): 48 hours before the deadline, once per payment window.
+4. **Seat confirmation:** when an admin confirms the payment, the participant gets a confirmation
+   with a **personal link** (`/#access=…`). Unlike login links it works on any number of devices,
+   until the event ends, so nobody needs an admin to get back in. *Log out other devices* replaces
+   it (and mails the new one); admins can replace all of them on `/admin/security`.
+5. **Messages** from admins (see above). Only confirmed addresses get mails; registrations from
+   before mail was switched on count as confirmed.
+
+Mails are written to the database in the same transaction as the change they report, sent right
+away in the background, and tried again by the **scheduler** (up to 8 times) if the mail server
+was unreachable. Each mail is plain text plus HTML in the light colours and fonts of the event's
+theme (see [THEMES.md](THEMES.md)), in the participant's language. Sent mails are deleted after
+30 days. The SMTP password is stored in the database (it is needed to log in to the mail server)
+and is never sent back to the browser.
+
+**Scheduler:** `python -m lanparty.jobs` runs once a minute: it sends payment reminders, retries
+failed mails, deletes unconfirmed registrations and expired reservations even when nobody visits
+the site, and cleans up old mails and audit entries. In Docker it is the `scheduler` service. Without
+Docker, run it as a service, or every few minutes from cron with `--once` (which exits with 1 if the
+pass failed). `--check` exits with 0 if
+a pass finished recently (for health checks); the admin pages warn when it isn't running.
+
+**Maintenance:** `python -m lanparty.manage test-mail you@example.com` sends a test mail with the
+saved settings; `python -m lanparty.manage reset-admin-password` deletes every admin account and
+session, so `ADMIN_PASSWORD` works again (start mode).
 
 ## API
 
@@ -309,16 +396,20 @@ All endpoints are under `/api` and use JSON.
 | GET    | `/info` | – | The active event's settings, plus `active`, `seat_count`, `registration_open` (never the code itself) and `upcoming` (name, dates, location and opening date of each upcoming event) |
 | GET    | `/seats` | – (token optional, marks `mine`) | `{layout, seats, names_visible}` of the active event (`layout` is `null` while none is active). Occupant names are only included for code holders (`X-Event-Code` header), participants and admins. |
 | POST   | `/event-code` | – | `{code}` → checks the event code (rate-limited; 403 while no code is set) |
-| POST   | `/register` | – | `{name, email, event_code}` → `{token, user}` (rate-limited) |
+| POST   | `/register` | – | `{name, email, event_code}` → `{token, user, confirmation_required}` (rate-limited; with mail, `user.confirm_until` is the confirmation deadline) |
 | GET    | `/me` | token | Current user and payment info (incl. `reserved_until`) |
 | POST   | `/me/seat` | token | `{seat: "B3"}` → reserve or change seat; returns payment info |
 | DELETE | `/me/seat` | token | Release your seat (only before payment is confirmed) |
 | POST   | `/me/login-link` | token | → `{code, expires_at}`: a one-time login code |
 | POST   | `/me/logout` | token | Invalidate this device's token |
-| POST   | `/me/logout-others` | token | → `{devices}`: invalidate all other tokens of this person and their unused login codes |
+| POST   | `/me/logout-others` | token | → `{devices, new_link_sent}`: invalidate all other tokens of this person, their unused login codes and their personal link (a new one is mailed) |
+| POST   | `/me/confirmation` | token | Send the confirmation mail again (mail on; 3 per hour) |
+| POST   | `/confirm` | – | `{code, login}` → `{user, payment, token}`: confirm the email address; `login: true` also returns a device token |
+| POST   | `/access/preview` | – | `{code}` → `{user_id, name}` for a personal link |
+| POST   | `/access` | – | `{code}` → `{token, user}`; personal links can be used again |
 | POST   | `/login/preview` | – | `{code}` → `{user_id, name}`; doesn't use up the code |
 | POST   | `/login` | – | `{code}` → `{token, user}`; uses up the code |
-| POST   | `/admin/login` | – | `{password, name}` (rate-limited; `name` is required, 400 without it) |
+| POST   | `/admin/login` | – | `{name, password}` (rate-limited; `name` is required, 400 without it). With accounts, the name selects the account; one error message for a wrong name or password |
 | POST   | `/admin/logout` | – | |
 | POST   | `/admin/logout-all` | admin | End every admin session |
 | GET    | `/admin/session` | – | `{admin: bool, actor}` |
@@ -333,11 +424,25 @@ All endpoints are under `/api` and use JSON.
 | POST   | `/admin/users/<id>/paid` | admin | `{paid: true \| false}` |
 | POST   | `/admin/users/<id>/move` | admin | `{seat: "C4" \| null}` |
 | DELETE | `/admin/users/<id>` | admin | Remove the person |
-| GET/PUT| `/admin/settings` | admin | Read or update settings (partial updates allowed; `amount` in €) |
+| GET/PUT| `/admin/settings` | admin | Read or update the event's settings (partial updates allowed; `amount` in €, `payment_reminders` true/false); also returns `mail_enabled` and `scheduler_last_run` |
+| POST   | `/admin/messages` | admin | `{audience: all \| open \| paid, subject, body}` → `{recipients}`; with `dry_run: true` only counts (mail on) |
+| GET    | `/admin/overview` | admin | Summary for `/admin`: current event, mail status, number of security warnings |
+| GET/PUT| `/admin/config/<section>` | admin | App-wide settings of `general`, `mail` or `security`: `{fields: [{key, type, value, …}]}`; secrets only report `set`. `PUT` takes `{key: value}`; an empty secret keeps it, `<key>_clear: true` removes it |
+| GET    | `/admin/mail/queue` | admin | Mail status and the mails that weren't sent yet |
+| POST   | `/admin/mail/retry` | admin | Try given-up mails again |
+| POST   | `/admin/mail/test` | admin | `{to}`: send a test mail now; 502 with the server's error if it fails |
+| GET    | `/admin/admins` | admin | Admin accounts (`id`, `name`, `created_at`, `created_by`, `last_login_at`, `current`) and `start_mode` |
+| POST   | `/admin/admins` | admin | `{name, password, current}`: add an admin (your `current` password confirms it); the first one ends start mode and every session |
+| DELETE | `/admin/admins/<id>` | admin | `{current}`: remove another admin and end their sessions |
+| POST   | `/admin/password` | admin | `{current, new}`: change your own password; your other sessions end |
+| GET    | `/admin/sessions` | admin | Admin sessions (`id`, `actor`, times, `current`) and where the password comes from |
+| DELETE | `/admin/sessions/<id>` | admin | End one admin session |
+| POST   | `/admin/participant-access` | admin | `{action: login_links \| personal_links \| devices, resend}` for `?event=`: void login links, replace personal links (and mail new ones), or log out every device → `{count, mailed}` |
+| GET    | `/admin/security/checks` | admin | The security checks `[{id, level: ok \| info \| warn, text}]` |
 | GET/PUT| `/admin/layout` | admin | Read or replace the seat layout; `PUT` returns `{layout, moved}` |
 
 The event-specific admin endpoints (`/admin/users`, `/admin/seats`, `/admin/settings`,
-`/admin/layout`) take `?event=<id>`. Without it they use the active event, otherwise the next
+`/admin/layout`, `/admin/messages`, `/admin/participant-access`) take `?event=<id>`. Without it they use the active event, otherwise the next
 upcoming one, otherwise the newest. Changing participants or the layout of an archived event
 returns 409.
 
@@ -370,20 +475,22 @@ What the app protects against, and how:
 
 | Threat | Protection |
 |--------|------------|
-| Guessing the admin password | At most 5 failed logins per IP and 50 overall per 15 minutes. While locked, even the right password is refused. Passwords under 12 characters are rejected at startup. |
-| Stolen or forged admin cookies | Sessions are stored in the database, behind a random `HttpOnly`, `SameSite=Strict` cookie with `Path=/api`. They end after 60 minutes of inactivity or 12 hours at most, on logout, with *Log out everywhere*, or when `ADMIN_PASSWORD` changes. |
+| Guessing admin passwords | At most 5 failed logins per IP and 50 overall per 15 minutes (adjustable on `/admin/security`). While locked, even the right password is refused. Passwords under 12 characters are rejected. Each admin has an account with a scrypt-hashed password; a wrong name and a wrong password take as long and get the same answer. Adding or removing admins and changing a password need the current password (failures count as failed logins), so a stolen session alone can't take over the admin area. |
+| Stolen or forged admin cookies | Sessions are stored in the database, behind a random `HttpOnly`, `SameSite=Strict` cookie with `Path=/api`. They end after 60 minutes of inactivity or 12 hours at most, on logout, with *Log out everywhere* or *End session* on `/admin/security`, or when that admin's password changes or the account is removed. |
 | Admin actions nobody can trace (e.g. a changed PayPal address) | The audit log records the admin's name for each action. |
 | One person reserving every seat | Registrations limited per IP, at most 4 unpaid reservations per IP, unpaid reservations expire. Registration requires the event code. |
 | Dodging per-IP limits with IPv6 | Every IPv6 user can choose among the 2^64 addresses of their `/64` network, so IPv6 clients are counted per `/64`. IPv4-mapped addresses count as the IPv4 address. |
 | A lost phone that is still logged in | *Log out other devices* invalidates every other device token and unused login link of that person; admins can also remove the person. |
 | Strangers seeing who attends | The seat plan shows names only to code holders, participants and admins. Guessing the code is rate-limited. Without a code (the default), nobody but participants and admins sees names. |
-| Login tokens leaking via URLs or logs | Personal links are one-time codes in the URL fragment (`#login=…`), which browsers never send to the server. Tokens and codes are stored only as SHA-256 hashes. |
+| Login tokens leaking via URLs or logs | Login, confirmation and personal links carry their code in the URL fragment (`#login=…`, `#confirm=…`, `#access=…`), which browsers never send to the server. Tokens and codes are stored only as SHA-256 hashes. Personal links end with the event, and participants or admins can replace them. |
 | Being tricked into using someone else's account | A login link asks before replacing an existing login. |
 | XSS / clickjacking | All user text is inserted with `textContent`. Strict CSP (`default-src 'self'`, no inline scripts, `object-src`/`base-uri 'none'`), `X-Frame-Options: DENY`. |
 | CSRF | The admin cookie is `SameSite=Strict`, and the API only accepts `application/json` bodies. Participant requests use a custom header. |
 | Oversized or malicious requests | 256 KB size limit. `NaN`/`Infinity`, deeply nested JSON, NUL characters and lone UTF-16 surrogates are rejected with a 400 error. |
 | Email addresses that rewrite a mail link (`a@b.de?cc=…`) | Addresses with `?`, `#`, `%`, `<`, `>` or quotes are refused at registration, and the admin page escapes mail links. |
 | Vulnerable or tampered dependencies | Dependabot proposes weekly updates for Python packages, base images and GitHub Actions. CI runs `pip-audit` on every push and weekly. Actions are pinned to commit SHAs and the Python base image to a digest. |
+| Mails as an attack vector | Mail subjects are reduced to one line (no header injection); all text, including admin messages, is HTML-escaped; theme colours are only taken over when they are plain values. Confirmation mails need the event code to register and are rate-limited like registrations, resending to 3 an hour. Messages only go to confirmed addresses. |
+| Mail server credentials | The SMTP password is write-only in the admin area (never sent back) and never logged; changes are audited as "(changed)". |
 | Caching of personal data | `Cache-Control: no-store` on all API responses. |
 | SQL injection | Only parameterised queries. |
 
@@ -400,7 +507,7 @@ Known limitations:
   IPv6 networks) can still reserve several seats. Those seats are released when the reservation
   time runs out, and the admin sees all reservations. The event code is 4 to 6 characters; use
   6 for events you announce publicly.
-- Everyone shares one admin password, and there is no second factor. The overall limit on failed
+- Admin accounts have no second factor. The overall limit on failed
   admin logins means that someone with many IP addresses can lock the admins out for 15 minutes.
 - Participant device tokens stay valid until the participant logs out, is removed, or the event
   ends (tokens only work for the active event).
@@ -435,7 +542,8 @@ supply-chain and container settings.
 
 ## Docker
 
-`docker-compose.yml` runs the app (gunicorn, 4 workers) together with PostgreSQL 17. You only
+`docker-compose.yml` runs the app (gunicorn, 4 workers), the scheduler (`python -m lanparty.jobs`,
+for mail retries, reminders and expiry) and PostgreSQL 17. You only
 need the compose file and `.env.example`, not the code: the image is pulled from
 `ghcr.io/its-marvin/lan-party-seat-selection` (amd64 and arm64).
 
@@ -452,7 +560,7 @@ The app is then at <http://127.0.0.1:8000>. Settings in `.env`:
 | Variable | Default | Purpose |
 |---|---|---|
 | `LANPARTY_VERSION` | `latest` | Image tag: `latest` (the newest release), or a release such as `1.2.3`, `1.2` or `1`. |
-| `ADMIN_PASSWORD` | *(required)* | Admin password, at least 12 characters. |
+| `ADMIN_PASSWORD` | *(required)* | Start admin password (at least 12 characters), used until you create the first admin account on `/admin/security`. |
 | `POSTGRES_PASSWORD` | *(required)* | Password of the database user. The database is only reachable inside the compose network; its port is not published. |
 | `TIMEZONE` | `UTC` | Time zone of the event dates. Containers run in UTC, so set this (e.g. `Europe/Berlin`). |
 | `BIND_ADDRESS` / `PORT` | `127.0.0.1` / `8000` | Where the app listens on the host. The default only lets a reverse proxy on the same machine in; use `0.0.0.0` to serve the local network directly. |
@@ -460,7 +568,9 @@ The app is then at <http://127.0.0.1:8000>. Settings in `.env`:
 | `WEB_CONCURRENCY` | `4` | Number of gunicorn worker processes. |
 
 Other variables from [Configuration](#configuration) can be added to the `app` service's
-`environment` in `docker-compose.yml`.
+`environment` in `docker-compose.yml` (the scheduler shares it). Mail is set up afterwards on
+`/admin/mail`, not in `.env`; test it there or with
+`docker compose exec app python -m lanparty.manage test-mail you@example.com`.
 
 - **Data** lives in the `db-data` volume and survives `docker compose down` and image rebuilds
   (`docker compose down -v` deletes it). Back it up with
@@ -469,7 +579,8 @@ Other variables from [Configuration](#configuration) can be added to the `app` s
   as `THEMES_DIR`.
 - **Updating:** `docker compose pull && docker compose up -d`. The schema is updated at startup.
   Pin `LANPARTY_VERSION` to a release to update only when you choose to.
-- The container runs as an unprivileged user and has a health check on `/api/info`. The compose
+- The containers run as an unprivileged user; the app has a health check on `/api/info`, the
+  scheduler one on its last run (`python -m lanparty.jobs --check`). The compose
   file also makes its filesystem read-only (except a small `/tmp`), drops all Linux capabilities
   and sets `no-new-privileges`; the database container keeps only the capabilities its entrypoint
   needs.

@@ -9,6 +9,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api import bp as api_bp
+from . import admin_api  # noqa: F401  (adds the admin areas' endpoints to the blueprint)
 from .db import database_target, init_db, is_postgres, is_unavailable
 from .i18n import tr
 from . import events, themes
@@ -54,6 +55,10 @@ def create_app(config: dict | None = None) -> Flask:
         ADMIN_SESSION_IDLE_MINUTES=_env_int("ADMIN_SESSION_IDLE_MINUTES", 60),
         ADMIN_SESSION_MAX_HOURS=_env_int("ADMIN_SESSION_MAX_HOURS", 12),
         LOGIN_CODE_HOURS=_env_int("LOGIN_CODE_HOURS", 7 * 24),
+        # base address of the site for links in mails (also set on /admin/settings)
+        PUBLIC_URL=os.environ.get("PUBLIC_URL", "").strip(),
+        # development only: "console" logs mails instead of sending them (SMTP is set on /admin/mail)
+        MAIL_BACKEND=os.environ.get("MAIL_BACKEND", "").strip().lower(),
         # audit log entries older than this are deleted (0 = keep them all)
         AUDIT_LOG_RETENTION_DAYS=_env_int("AUDIT_LOG_RETENTION_DAYS", 365),
         # IANA time zone of the event dates (e.g. Europe/Berlin); empty = server time
@@ -69,7 +74,8 @@ def create_app(config: dict | None = None) -> Flask:
 
     password = app.config["ADMIN_PASSWORD"]
     if not password:
-        app.logger.warning("ADMIN_PASSWORD not set; the admin area is disabled.")
+        app.logger.warning("ADMIN_PASSWORD not set: only existing admin accounts can log in "
+                           "(without any, the admin area is disabled).")
     elif (len(password) < MIN_ADMIN_PASSWORD_LENGTH
           and not app.config["ALLOW_WEAK_ADMIN_PASSWORD"] and not app.config.get("TESTING")):
         raise RuntimeError(
@@ -90,6 +96,9 @@ def create_app(config: dict | None = None) -> Flask:
                 f"Unknown TIMEZONE {app.config['TIMEZONE']!r} (use an IANA name like Europe/Berlin)."
             ) from None
 
+    from . import mail
+    mail.configure(app)
+
     if app.config["TRUSTED_PROXIES"] > 0:
         n = app.config["TRUSTED_PROXIES"]
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=n, x_proto=n, x_host=n)
@@ -103,9 +112,17 @@ def create_app(config: dict | None = None) -> Flask:
     def index():
         return send_from_directory(app.static_folder, "index.html")
 
+    # /admin: login and overview; each area has its own page
+    admin_pages = {"": "admin.html", "events": "admin-events.html", "settings": "admin-settings.html",
+                   "mail": "admin-mail.html", "security": "admin-security.html"}
+
     @app.get("/admin")
-    def admin():
-        return send_from_directory(app.static_folder, "admin.html")
+    @app.get("/admin/<area>")
+    def admin(area=""):
+        page = admin_pages.get(area)
+        if page is None:
+            abort(404)
+        return send_from_directory(app.static_folder, page)
 
     @app.get("/theme.css")
     def event_theme():

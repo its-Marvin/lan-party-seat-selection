@@ -153,6 +153,17 @@ The app serves these file types from a theme folder: `.css`, `.woff2`, `.woff`, 
 `.png`, `.jpg`/`.jpeg`, `.gif`, `.webp`, `.avif` and `.svg`. Anything else (including `theme.json`)
 returns 404. Check the licence of fonts and images you bundle.
 
+## Mails
+
+When mail is switched on (`/admin/mail`), every mail of an event uses that event's theme. Mail
+programs don't understand CSS variables, web fonts or extra CSS, so a mail only takes over the
+**light-mode** values of these tokens, read from your `theme.css`: `--bg`, `--card`, `--border`,
+`--text`, `--muted`, `--accent`, `--on-accent`, `--hero-from`, `--hero-to`, `--hero-text`,
+`--font-body` and `--radius-scale` (missing ones come from the default theme). Only plain values
+are used: colours like `#0a7a2f` or `rgb(…)`, font lists; anything with `var()` or `url()` is
+skipped. Keep `--on-accent` readable on `--accent`, because it is the colour of the mail's button
+text. A `--font-body` that relies on a web font falls back to the next font in the list.
+
 ## How it works
 
 - The public page loads `/static/style.css`, then `/theme.css`. That small stylesheet imports

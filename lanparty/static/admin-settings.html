@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Party – Admin: Settings</title>
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/locales/en-US.js"></script>
+  <script src="/static/locales/de-DE.js"></script>
+  <script src="/static/common.js" defer></script>
+  <script src="/static/admin-common.js" defer></script>
+  <script src="/static/admin-settings.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap header-row">
+      <h1 data-i18n="admin.settingsPage.heading">Settings</h1>
+      <div class="header-actions">
+        <a href="/" data-i18n="admin.publicPage">← Public page</a>
+        <div class="header-switches">
+          <select id="lang-select" aria-label="Language" data-i18n-attr="aria-label:common.language">
+            <option value="en-US">English</option>
+            <option value="de-DE">Deutsch</option>
+          </select>
+          <select id="mode-select" aria-label="Colour mode" data-i18n-attr="aria-label:common.mode">
+            <option value="auto" data-i18n="common.mode.auto">◐ Auto</option>
+            <option value="light" data-i18n="common.mode.light">☀ Light</option>
+            <option value="dark" data-i18n="common.mode.dark">☾ Dark</option>
+          </select>
+        </div>
+        <span id="session-controls" hidden>
+          <span class="muted small" id="actor"></span>
+          <button type="button" id="logout" data-i18n="admin.logout">Log out</button>
+          <button type="button" id="logout-all" data-i18n="admin.logoutAll" data-i18n-attr="title:admin.logoutAllTitle"
+                  title="End every admin session, e.g. after a device was lost">Log out everywhere</button>
+        </span>
+      </div>
+    </div>
+    <nav class="wrap admin-nav" id="admin-nav" hidden aria-label="Admin areas" data-i18n-attr="aria-label:admin.nav.label">
+      <a href="/admin" data-i18n="admin.nav.overview">Overview</a>
+      <a href="/admin/events" data-i18n="admin.nav.events">Events</a>
+      <a href="/admin/settings" data-i18n="admin.nav.settings">Settings</a>
+      <a href="/admin/mail" data-i18n="admin.nav.mail">Mail</a>
+      <a href="/admin/security" data-i18n="admin.nav.security">Security</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="card" id="login-card" hidden>
+      <h2 data-i18n="admin.login.title">Log in</h2>
+      <form id="login-form" class="form-row">
+        <label><span data-i18n="admin.login.name">Admin name</span>
+          <input name="name" maxlength="40" required autocomplete="name"></label>
+        <label><span data-i18n="admin.login.password">Password</span>
+          <input type="password" name="password" required autocomplete="current-password"></label>
+        <button class="primary" data-i18n="admin.login.submit">Log in</button>
+      </form>
+      <p id="login-msg" class="message"></p>
+    </section>
+
+    <div id="admin-area" hidden>
+      <section class="card">
+        <h2 data-i18n="admin.settingsPage.title">General settings</h2>
+        <p class="muted small" data-i18n="admin.settingsPage.help">These settings apply to all events. Each event's own details (dates, fee, event code, theme) are on the Events page.</p>
+        <form id="general-form" class="settings">
+          <fieldset id="general-fields">
+            <legend data-i18n="admin.settingsPage.legend">All events</legend>
+          </fieldset>
+          <p class="muted small" id="server-time"></p>
+          <div class="actions"><button class="primary" data-i18n="admin.cfg.save">Save</button></div>
+        </form>
+        <p id="general-msg" class="message"></p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

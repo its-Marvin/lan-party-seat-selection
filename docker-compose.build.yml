@@ -4,3 +4,5 @@ services:
   app:
     build: .
     image: lanparty-seat-selection:local
+  scheduler:
+    image: lanparty-seat-selection:local

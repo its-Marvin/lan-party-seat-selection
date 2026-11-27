@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Party – Admin: Events</title>
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/locales/en-US.js"></script>
+  <script src="/static/locales/de-DE.js"></script>
+  <script src="/static/common.js" defer></script>
+  <script src="/static/layout-editor.js" defer></script>
+  <script src="/static/admin-events.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap header-row">
+      <h1 data-i18n="admin.events.heading">Events</h1>
+      <div class="header-actions">
+        <a href="/" data-i18n="admin.publicPage">← Public page</a>
+        <div class="header-switches">
+          <select id="lang-select" aria-label="Language" data-i18n-attr="aria-label:common.language">
+            <option value="en-US">English</option>
+            <option value="de-DE">Deutsch</option>
+          </select>
+          <select id="mode-select" aria-label="Colour mode" data-i18n-attr="aria-label:common.mode">
+            <option value="auto" data-i18n="common.mode.auto">◐ Auto</option>
+            <option value="light" data-i18n="common.mode.light">☀ Light</option>
+            <option value="dark" data-i18n="common.mode.dark">☾ Dark</option>
+          </select>
+        </div>
+        <span id="session-controls" hidden>
+          <span class="muted small" id="actor"></span>
+          <button type="button" id="logout" data-i18n="admin.logout">Log out</button>
+          <button type="button" id="logout-all" data-i18n="admin.logoutAll" data-i18n-attr="title:admin.logoutAllTitle"
+                  title="End every admin session, e.g. after a device was lost">Log out everywhere</button>
+        </span>
+      </div>
+    </div>
+    <nav class="wrap admin-nav" id="admin-nav" hidden aria-label="Admin areas" data-i18n-attr="aria-label:admin.nav.label">
+      <a href="/admin" data-i18n="admin.nav.overview">Overview</a>
+      <a href="/admin/events" data-i18n="admin.nav.events">Events</a>
+      <a href="/admin/settings" data-i18n="admin.nav.settings">Settings</a>
+      <a href="/admin/mail" data-i18n="admin.nav.mail">Mail</a>
+      <a href="/admin/security" data-i18n="admin.nav.security">Security</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="card" id="login-card" hidden>
+      <h2 data-i18n="admin.login.title">Log in</h2>
+      <form id="login-form" class="form-row">
+        <label><span data-i18n="admin.login.name">Admin name</span>
+          <input name="name" maxlength="40" required autocomplete="name"></label>
+        <label><span data-i18n="admin.login.password">Password</span>
+          <input type="password" name="password" required autocomplete="current-password"></label>
+        <button class="primary" data-i18n="admin.login.submit">Log in</button>
+      </form>
+      <p id="login-msg" class="message"></p>
+    </section>
+
+    <div id="admin-area" hidden>
+      <section class="card" id="event-card">
+        <h2 data-i18n="admin.event.title">Event</h2>
+        <div class="event-bar">
+          <label><span data-i18n="admin.event.pick">Show and edit</span> <select id="event-select"></select></label>
+          <button type="button" id="new-event" data-i18n="admin.event.new" data-i18n-attr="title:admin.event.newTitle"
+                  title="Copies the settings (without dates and event code) and the seat layout">+ New event</button>
+          <button type="button" id="delete-event" class="danger" data-i18n="admin.event.delete">Delete event</button>
+        </div>
+        <p id="event-status" class="small"></p>
+        <p class="muted small">
+          <span data-i18n="admin.event.help">An event goes live automatically when its registration opens and is archived when it ends.
+          Only one event can be open at a time, so registration can only open after the previous event has ended.</span>
+          <span id="event-timezone"></span>
+        </p>
+        <p id="event-msg" class="message"></p>
+      </section>
+
+      <p class="card banner warning" id="closed-banner" hidden data-i18n-html="admin.closedBanner">
+        ⚠️ No event code is set, so <strong>registration is closed</strong> and visitors can't see any names.
+        Set a code under Settings → Access to open registration.
+      </p>
+      <section class="card">
+        <h2 data-i18n="admin.users.title">Participants</h2>
+        <p class="muted small" id="stats"></p>
+        <p id="users-msg" class="message"></p>
+        <div class="table-wrap">
+          <table class="stack">
+            <thead>
+              <tr>
+                <th data-i18n="admin.users.name">Name</th><th data-i18n="admin.users.email">Email</th>
+                <th data-i18n="admin.users.seat">Seat</th><th data-i18n="admin.users.status">Status</th>
+                <th data-i18n="admin.users.registered">Registered</th><th data-i18n="admin.users.actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" id="message-card" hidden>
+        <h2 data-i18n="admin.message.title">Message participants</h2>
+        <p class="muted small" data-i18n="admin.message.help">Sends a mail in the event's theme. Only confirmed email addresses get it; each participant gets it in their language frame, with your text as written.</p>
+        <form id="message-form" class="settings">
+          <fieldset>
+            <legend data-i18n="admin.message.legend">New message</legend>
+            <label><span data-i18n="admin.message.audience">Send to</span>
+              <select name="audience">
+                <option value="open" data-i18n="admin.message.open">Payment still open</option>
+                <option value="paid" data-i18n="admin.message.paid">Paid</option>
+                <option value="all" data-i18n="admin.message.all">All participants</option>
+              </select></label>
+            <label class="full"><span data-i18n="admin.message.subject">Subject</span>
+              <input name="subject" required maxlength="150"></label>
+            <label class="full"><span data-i18n="admin.message.body">Message (plain text; a blank line starts a new paragraph)</span>
+              <textarea name="body" rows="7" required maxlength="5000"></textarea></label>
+          </fieldset>
+          <div class="actions"><button class="primary" data-i18n="admin.message.send">Send…</button></div>
+        </form>
+        <p id="message-msg" class="message"></p>
+      </section>
+
+      <section class="card" id="layout-card">
+        <h2 data-i18n="admin.layout.title">Seat layout</h2>
+        <p class="muted small" data-i18n="admin.layout.help">
+          Drag groups and area elements to arrange them on the event area (or select one and use the arrow keys).
+          One grid square is one seat; every table seats two people. Seats are numbered per group: A1, A2, …
+          Area elements can be resized with the handle in their corner (or Shift + arrow keys).
+        </p>
+        <div class="editor-toolbar">
+          <label><span data-i18n="admin.layout.areaWidth">Area width</span> <input id="area-width" type="number" min="4" max="200"></label>
+          <label><span data-i18n="admin.layout.areaHeight">Area height</span> <input id="area-height" type="number" min="4" max="200"></label>
+          <button type="button" id="add-group" data-i18n="admin.layout.addGroup">+ Add group</button>
+          <span id="layout-summary" class="muted small"></span>
+          <span class="spacer"></span>
+          <button type="button" id="discard-layout" data-i18n="admin.layout.discard">Discard changes</button>
+          <button type="button" id="save-layout" class="primary" data-i18n="admin.layout.save">Save layout</button>
+        </div>
+        <div class="editor-toolbar add-items">
+          <span class="muted small" data-i18n="admin.layout.addItem">Add area element:</span>
+          <button type="button" data-add-item="door">🚪 <span data-i18n="item.door">Door</span></button>
+          <button type="button" data-add-item="window">🪟 <span data-i18n="item.window">Window</span></button>
+          <button type="button" data-add-item="sleeping">🛏️ <span data-i18n="item.sleeping">Sleeping area</span></button>
+          <button type="button" data-add-item="food">🍕 <span data-i18n="item.food">Food &amp; drinks</span></button>
+          <button type="button" data-add-item="other">📍 <span data-i18n="item.other">Other</span></button>
+        </div>
+        <div class="editor">
+          <div id="layout-canvas" class="seat-map editor-canvas" aria-label="Layout editor" data-i18n-attr="aria-label:admin.layout.canvas"></div>
+          <aside class="group-panel">
+            <p id="group-hint" class="muted small" data-i18n="admin.layout.selectHint">Select a group or area element to edit it.</p>
+            <form id="group-form" hidden>
+              <h3 id="group-title"></h3>
+              <label><span data-i18n="admin.layout.label">Label (1–3 letters)</span>
+                <input name="label" maxlength="3" required autocomplete="off"></label>
+              <label><span data-i18n="admin.layout.groupName">Name (optional)</span>
+                <input name="name" maxlength="60" placeholder="e.g. Clan corner" data-i18n-attr="placeholder:admin.layout.groupNamePlaceholder"></label>
+              <div class="pair">
+                <label><span data-i18n="admin.layout.tables">Tables</span> <input name="tables" type="number" min="1" max="60" required></label>
+                <label><span data-i18n="admin.layout.perRow">Tables per row</span> <input name="per_row" type="number" min="1" max="60" required></label>
+              </div>
+              <label><span data-i18n="admin.layout.orientation">Orientation</span>
+                <select name="orientation">
+                  <option value="horizontal" data-i18n="admin.layout.horizontal">Horizontal (rows left → right)</option>
+                  <option value="vertical" data-i18n="admin.layout.vertical">Vertical (rows top → bottom)</option>
+                </select>
+              </label>
+              <div class="pair">
+                <label>X <input name="x" type="number" min="0" max="200"></label>
+                <label>Y <input name="y" type="number" min="0" max="200"></label>
+              </div>
+              <p class="muted small" id="group-info"></p>
+              <div class="actions">
+                <button type="button" class="duplicate-selected" data-i18n="admin.layout.duplicate">Duplicate</button>
+                <button type="button" class="danger delete-selected" data-i18n="admin.layout.delete">Delete</button>
+              </div>
+            </form>
+            <form id="item-form" hidden>
+              <h3 id="item-title"></h3>
+              <label><span data-i18n="admin.layout.type">Type</span>
+                <select name="type">
+                  <option value="door" data-i18n="itemOption.door">🚪 Door</option>
+                  <option value="window" data-i18n="itemOption.window">🪟 Window</option>
+                  <option value="sleeping" data-i18n="itemOption.sleeping">🛏️ Sleeping area</option>
+                  <option value="food" data-i18n="itemOption.food">🍕 Food &amp; drinks</option>
+                  <option value="other" data-i18n="itemOption.other">📍 Other</option>
+                </select>
+              </label>
+              <label><span data-i18n="admin.layout.itemLabel">Label (optional)</span>
+                <input name="label" maxlength="40" autocomplete="off"></label>
+              <div class="pair">
+                <label>X <input name="x" type="number" min="0" max="200"></label>
+                <label>Y <input name="y" type="number" min="0" max="200"></label>
+              </div>
+              <div class="pair">
+                <label><span data-i18n="admin.layout.width">Width</span> <input name="w" type="number" min="1" max="200"></label>
+                <label><span data-i18n="admin.layout.height">Height</span> <input name="h" type="number" min="1" max="200"></label>
+              </div>
+              <div class="actions">
+                <button type="button" class="duplicate-selected" data-i18n="admin.layout.duplicate">Duplicate</button>
+                <button type="button" class="danger delete-selected" data-i18n="admin.layout.delete">Delete</button>
+              </div>
+            </form>
+          </aside>
+        </div>
+        <p id="layout-readonly" class="muted small" hidden data-i18n="admin.layout.readOnly">
+          This event is archived: you can look at its seat plan, but changes can't be saved.
+        </p>
+        <ul id="layout-problems" class="problems"></ul>
+        <p id="layout-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="admin.settings.title">Settings</h2>
+        <form id="settings-form" class="settings">
+          <fieldset>
+            <legend data-i18n="admin.settings.event">Event</legend>
+            <label><span data-i18n="admin.settings.name">Name</span> <input name="event_name" required maxlength="120"></label>
+            <label><span data-i18n="admin.settings.opens">Registration opens</span> <input name="registration_opens" type="datetime-local"></label>
+            <label><span data-i18n="admin.settings.start">Start</span> <input name="event_start" type="datetime-local"></label>
+            <label><span data-i18n="admin.settings.end">End</span> <input name="event_end" type="datetime-local"></label>
+            <label><span data-i18n="admin.settings.location">Location</span> <input name="location" maxlength="200"></label>
+            <label class="full"><span data-i18n="admin.settings.description">Description / info</span>
+              <textarea name="description" rows="6" maxlength="5000"></textarea></label>
+          </fieldset>
+          <fieldset>
+            <legend data-i18n="admin.settings.appearance">Appearance</legend>
+            <label><span data-i18n="admin.settings.theme">Theme of the public page</span> <select name="theme" id="theme-choice"></select></label>
+            <p class="small theme-preview-row"><a id="theme-preview" href="/" target="_blank" rel="noopener" data-i18n="admin.settings.preview">Preview this theme ↗</a></p>
+            <p class="muted small full" id="theme-description"></p>
+            <p class="muted small full">
+              <span data-i18n="admin.settings.themeHelp">Every theme comes with a light and a dark mode; visitors still pick Auto, Light or Dark. Add your own themes as folders in:</span>
+              <code id="themes-dir"></code> (<code>THEMES.md</code>)
+            </p>
+            <ul class="problems full" id="theme-problems"></ul>
+          </fieldset>
+          <fieldset>
+            <legend data-i18n="admin.settings.access">Access</legend>
+            <label><span data-i18n="admin.settings.code">Event code (4–6 letters or digits)</span>
+              <span class="copy-row">
+                <input name="event_code" class="code-input" maxlength="6" pattern="[A-Za-z0-9]{4,6}" autocomplete="off" spellcheck="false">
+                <button type="button" id="generate-code" data-i18n="admin.settings.generate">Generate</button>
+              </span>
+            </label>
+            <p class="muted small full" id="event-code-hint" data-i18n="admin.settings.codeHint">
+              Share the code with your guests. Without it, visitors see which seats are taken but not by whom,
+              and they can't register. While no code is set, registration is closed.
+              Changing the code doesn't affect people who are already registered.
+            </p>
+          </fieldset>
+          <fieldset>
+            <legend data-i18n="admin.settings.payment">Payment</legend>
+            <label><span data-i18n="admin.settings.paypal">PayPal address</span>
+              <input name="paypal_address" maxlength="200" placeholder="you@example.com or paypal.me/you" data-i18n-attr="placeholder:admin.settings.paypalPlaceholder"></label>
+            <label><span data-i18n="admin.settings.amount">Amount due (€)</span> <input name="amount" inputmode="decimal" required></label>
+            <label><span data-i18n="admin.settings.hold">Time to pay (hours, 0 = forever)</span>
+              <input name="reservation_hours" type="number" min="0" max="1440" required></label>
+            <label class="checkbox full" id="reminder-row" hidden><input type="checkbox" name="payment_reminders">
+              <span data-i18n="admin.settings.reminders">Mail a payment reminder before the deadline</span></label>
+            <p class="muted small full" id="reminder-hint" hidden></p>
+          </fieldset>
+          <div class="actions"><button class="primary" data-i18n="admin.settings.save">Save settings</button></div>
+        </form>
+        <p id="settings-msg" class="message"></p>
+      </section>
+
+    </div>
+  </main>
+</body>
+</html>

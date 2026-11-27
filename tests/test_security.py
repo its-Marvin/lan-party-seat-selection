@@ -207,7 +207,7 @@ def test_unpaid_reservation_expires(app, client):
     assert me["user"]["reserved_until"].endswith("Z")
     assert me["payment"]["reserved_until"] == me["user"]["reserved_until"]
 
-    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-49),))
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-169),))
     seats = {s["id"]: s["status"] for s in client.get("/api/seats").get_json()["seats"]}
     assert seats["A1"] == "free"
     assert client.get("/api/me", headers=headers).get_json()["user"]["seat"] is None
