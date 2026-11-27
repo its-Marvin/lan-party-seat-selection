@@ -21,7 +21,11 @@ from .db import IntegrityError, get_db, read_snapshot, utc_now, write_transactio
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# Not allowed: whitespace and the characters that mean something in a mailto: link
+# (?, #, %), in HTML (<, >, ") or that real addresses (practically) never use.
+_EMAIL_PART = r"[^@\s?#%<>\"(),;:\\\[\]]+"
+_DOMAIN_PART = r"[^@\s?#%<>\"(),;:\\\[\]/]+"
+EMAIL_RE = re.compile(rf"^{_EMAIL_PART}@{_DOMAIN_PART}\.{_DOMAIN_PART}$")
 
 
 class ApiError(Exception):
@@ -59,14 +63,19 @@ def _finite_float(text):
     return value
 
 
-def _contains_nul(value) -> bool:
-    """Any string (or key) with a NUL, at any depth. Iterative: json.loads accepts
-    nesting deeper than Python's recursion limit allows a recursive walk."""
+# NUL can't be stored in PostgreSQL text; a lone UTF-16 surrogate (\ud800 in JSON)
+# is no character at all and can't be encoded as UTF-8 for either database
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _has_unstorable_text(value) -> bool:
+    """Any string (or key) at any depth with NUL or a lone surrogate. Iterative:
+    json.loads accepts nesting deeper than Python's recursion limit allows a recursive walk."""
     pending = [value]
     while pending:
         item = pending.pop()
         if isinstance(item, str):
-            if "\x00" in item:
+            if _UNSTORABLE.search(item):
                 return True
         elif isinstance(item, dict):
             pending.extend(item.keys())
@@ -78,7 +87,7 @@ def _contains_nul(value) -> bool:
 
 def json_body() -> dict:
     """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON
-    types, and NUL characters, which PostgreSQL can't store in text)."""
+    types, and text that can't be stored: NUL characters and lone surrogates)."""
     if not request.is_json:
         raise ApiError(415, tr("Expected a JSON request body (Content-Type: application/json)."))
     try:
@@ -88,8 +97,8 @@ def json_body() -> dict:
         raise ApiError(400, tr("Malformed JSON.")) from None
     if not isinstance(data, dict):
         raise ApiError(400, tr("Expected a JSON object."))
-    if _contains_nul(data):
-        raise ApiError(400, tr("Text must not contain NUL characters."))
+    if _has_unstorable_text(data):
+        raise ApiError(400, tr("Text must not contain NUL characters or invalid Unicode."))
     return data
 
 
@@ -145,6 +154,9 @@ def registration_open() -> bool:
     return active_event_id() is not None and bool(settings()["event_code"])
 
 
+EVENT_CODE_WINDOW = 900  # seconds
+
+
 def check_event_code(value, *, raise_when_limited: bool) -> bool:
     """Compare a submitted event code; wrong codes count towards the per-IP limit.
 
@@ -160,7 +172,9 @@ def check_event_code(value, *, raise_when_limited: bool) -> bool:
         return False
     # Reserve an attempt first (atomically) and give it back if the code is right,
     # so parallel guesses can never exceed the limit.
-    wait, attempt = sec.consume("event_code_fail", sec.ip_hash(), conf("EVENT_CODE_MAX_PER_IP"), 900)
+    key = sec.ip_hash()
+    limit = conf("EVENT_CODE_MAX_PER_IP")
+    wait, attempt = sec.consume("event_code_fail", key, limit, EVENT_CODE_WINDOW)
     if wait:
         if raise_when_limited:
             raise ApiError(429, tr("Too many wrong event codes. Please try again in {wait}.", wait=human_wait(wait)),
@@ -169,6 +183,10 @@ def check_event_code(value, *, raise_when_limited: bool) -> bool:
     if len(code) <= 20 and hmac.compare_digest(code.encode(), expected.encode()):
         sec.release(attempt)
         return True
+    if sec.attempts("event_code_fail", key, EVENT_CODE_WINDOW) == limit:
+        # once per lockout, so admins notice someone guessing the code
+        sec.audit("anonymous", "event_code.limit_reached", network=sec.anonymized_ip(),
+                  attempts=limit, event_id=active_event_id())
     return False
 
 
@@ -571,6 +589,32 @@ def my_login_link():
     return jsonify(code=code, expires_at=expires)
 
 
+@bp.post("/me/logout")
+def my_logout():
+    """Log this device out: its token stops working (not only forgotten by the browser)."""
+    user = require_user()
+    db = get_db()
+    db.execute("DELETE FROM user_tokens WHERE token_hash = ? AND user_id = ?",
+               (sec.sha256(request.headers["X-User-Token"]), user["id"]))
+    db.commit()
+    return jsonify(ok=True)
+
+
+@bp.post("/me/logout-others")
+def my_logout_others():
+    """Log out every other device (e.g. a lost phone) and void unused login links,
+    which such a device could have created."""
+    user = require_user()
+    db = get_db()
+    devices = db.execute("DELETE FROM user_tokens WHERE user_id = ? AND token_hash != ?",
+                         (user["id"], sec.sha256(request.headers["X-User-Token"]))).rowcount
+    links = db.execute("DELETE FROM login_codes WHERE user_id = ?", (user["id"],)).rowcount
+    sec.record_audit(f"participant:{user['id']}", "user.logged_out_elsewhere", **user_summary(user),
+                     devices=devices, login_links=links)
+    db.commit()
+    return jsonify(ok=True, devices=devices)
+
+
 @bp.post("/login/preview")
 def login_preview():
     """Tell the browser whose account a login code belongs to, without using it up."""
@@ -667,8 +711,8 @@ def admin_login():
     name = clean_actor_name(data.get("name"))
     if not name:
         raise ApiError(400, tr("Please enter your name. It shows in the audit log."))
-    ip = sec.client_ip()
-    key = sec.ip_hash(ip)
+    key = sec.ip_hash()
+    network = sec.anonymized_ip()  # the audit log keeps no full addresses
     window = conf("ADMIN_LOGIN_WINDOW_MINUTES") * 60
     # Reserve an attempt in both buckets before checking the password (atomic, so
     # parallel guesses cannot exceed the limits); a successful login gives them back.
@@ -682,13 +726,15 @@ def admin_login():
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
     password = str(data.get("password") or "")
-    if not hmac.compare_digest(password.encode(), expected.encode()):
-        sec.audit("anonymous", "admin.login_failed", ip=ip, name=name)
+    # compare digests, so the comparison takes the same time whatever the lengths
+    if not hmac.compare_digest(sec.sha256(password), sec.sha256(expected)):
+        sec.audit("anonymous", "admin.login_failed", network=network, name=name)
         raise ApiError(401, tr("Wrong password."))
     sec.release(ip_attempt)
     sec.release(global_attempt)
     token = sec.create_admin_session(name)
-    sec.audit(name, "admin.login", ip=ip)
+    sec.audit(name, "admin.login", network=network)
+    sec.prune_audit_log()
     resp = jsonify(ok=True, actor=name)
     sec.set_admin_cookie(resp, token)
     return resp
@@ -724,6 +770,7 @@ def admin_session():
 @bp.get("/admin/audit")
 @admin_required
 def admin_audit():
+    sec.prune_audit_log()
     return jsonify(entries=sec.audit_entries())
 
 

@@ -376,6 +376,40 @@ async function createLoginLink() {
   }
 }
 
+/** Log this device out on the server too, so the token can't be used any more. */
+async function logout() {
+  showMessage($("me-msg"), "");
+  if (!confirm(t("pub.logout.confirm"))) return;
+  try {
+    await api("POST", "/me/logout");
+  } catch (err) {
+    if (err.status !== 401) { showMessage($("me-msg"), err.message); return; }
+  }
+  setToken(null);
+  state.me = null;
+  state.payment = null;
+  try {
+    await refresh();
+    showMessage($("seat-msg"), t("pub.logout.done"), "success");
+  } catch (err) {
+    showMessage($("seat-msg"), err.message);
+  }
+}
+
+/** For a lost or shared device: end every other login of this participant. */
+async function logoutOthers() {
+  const msg = $("me-msg");
+  showMessage(msg, "");
+  if (!confirm(t("pub.logout.othersConfirm"))) return;
+  try {
+    const { devices } = await api("POST", "/me/logout-others");
+    resetLoginLinkBox();   // its link no longer works
+    showMessage(msg, devices ? t("pub.logout.othersDone", { count: devices }) : t("pub.logout.othersNone"), "success");
+  } catch (err) {
+    showMessage(msg, err.message);
+  }
+}
+
 async function copy(text, button) {
   try {
     await navigator.clipboard.writeText(text);
@@ -431,6 +465,8 @@ async function init() {
   $("code-form").addEventListener("submit", onEventCode);
   $("create-login-link").addEventListener("click", createLoginLink);
   $("copy-login-link").addEventListener("click", (e) => copy($("login-link").value, e.target));
+  $("logout").addEventListener("click", logout);
+  $("logout-others").addEventListener("click", logoutOthers);
   $("copy-address").addEventListener("click", (e) => copy(state.payment?.paypal_address || "", e.target));
   try {
     await refresh();

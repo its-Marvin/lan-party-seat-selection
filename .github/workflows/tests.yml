@@ -1,16 +1,31 @@
 name: Tests
 
 # Every push to a branch (main included). The Docker workflow also calls this
-# before it publishes a release image.
+# before it publishes a release image. The weekly run catches newly published
+# vulnerabilities in the dependencies even when nothing is pushed.
 on:
   push:
     branches: ["**"]
+  schedule:
+    - cron: "17 5 * * 1"
   workflow_call:
 
 permissions:
   contents: read
 
 jobs:
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install pip-audit
+      # what the Docker image installs, resolved the same way a release build would
+      - run: pip-audit -r requirements-docker.txt
+
   sqlite:
     name: SQLite (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -19,8 +34,8 @@ jobs:
       matrix:
         python: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -47,8 +62,8 @@ jobs:
     env:
       LANPARTY_TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/lanparty_test
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
           cache: pip

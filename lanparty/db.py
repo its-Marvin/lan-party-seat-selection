@@ -19,6 +19,7 @@ DO NOTHING``) or ``lastrowid`` (use ``db.insert()``).
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+import json
 import re
 import sqlite3
 
@@ -30,6 +31,15 @@ except ImportError:  # only needed for PostgreSQL
     psycopg = None
 
 IntegrityError = (sqlite3.IntegrityError, *((psycopg.IntegrityError,) if psycopg else ()))
+
+
+def is_unavailable(err: BaseException) -> bool:
+    """The database is busy (lock timeout) or unreachable: worth a retry (503),
+    unlike a bug in a query (500)."""
+    if isinstance(err, sqlite3.OperationalError):
+        return "locked" in str(err) or "busy" in str(err)
+    # psycopg's OperationalError: connection lost or refused, lock_timeout (LockNotAvailable)
+    return psycopg is not None and isinstance(err, psycopg.OperationalError)
 
 SCHEMA = """
 -- one row per event; its settings and layout live in event_settings
@@ -446,6 +456,7 @@ def _migrate(db) -> None:
             "SELECT token_hash, id, created_at FROM users WHERE true ON CONFLICT DO NOTHING"
         )
         _migrate_to_events(db, DEFAULTS, columns)
+        _anonymize_logged_ips(db)
         if sqlite:
             problems = db.execute("PRAGMA foreign_key_check").fetchall()
             if problems:
@@ -458,6 +469,23 @@ def _migrate(db) -> None:
     db.commit()
     if sqlite:
         db.execute("PRAGMA foreign_keys = ON")
+
+
+def _anonymize_logged_ips(db) -> None:
+    """Older versions logged the full client IP of admin logins; keep only the
+    network, as new entries do (see security.anonymized_ip)."""
+    from .security import anonymized_ip
+
+    rows = db.execute(
+        "SELECT id, details FROM audit_log WHERE action IN ('admin.login', 'admin.login_failed') "
+        "AND details LIKE ?", ('%"ip": %',)).fetchall()
+    for row in rows:
+        details = json.loads(row["details"])
+        if "ip" not in details:
+            continue
+        details["network"] = anonymized_ip(str(details.pop("ip")))
+        db.execute("UPDATE audit_log SET details = ? WHERE id = ?",
+                   (json.dumps(details, ensure_ascii=False), row["id"]))
 
 
 PER_EVENT_KEYS = ("layout",)  # besides settings.DEFAULTS

@@ -14,6 +14,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - db-data:/var/lib/postgresql/data
+    # the entrypoint needs these to set up the data folder and drop to the postgres user
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
     # not published: only the app reaches the database, over the compose network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lanparty -d lanparty"]
@@ -38,6 +42,11 @@ services:
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
     volumes:
       - ./themes:/data/themes:ro
+    # nothing in the container is writable except a small /tmp (gunicorn's heartbeat files)
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000"
 

@@ -5,13 +5,14 @@ Everything is stored in the database so it works across several worker processes
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import secrets
 import time
 
 from flask import current_app, request
 
-from .db import get_db, write_transaction
+from .db import get_db, utc_now, write_transaction
 
 PEPPER_KEY = "_ip_pepper"
 ADMIN_COOKIE = "lp_admin"
@@ -44,9 +45,48 @@ def _pepper() -> str:
     return db.execute("SELECT value FROM settings WHERE key = ?", (PEPPER_KEY,)).fetchone()["value"]
 
 
+IPV6_NETWORK_PREFIX = 64   # one IPv6 subscriber or LAN gets at least a /64
+LOG_PREFIX = {4: 24, 6: 48}  # how much of an address the audit log keeps
+
+
+def _parse_ip(ip: str):
+    try:
+        addr = ipaddress.ip_address(ip.split("%", 1)[0])   # drop an IPv6 zone id
+    except ValueError:
+        return None
+    if addr.version == 6 and addr.ipv4_mapped:
+        return addr.ipv4_mapped   # ::ffff:1.2.3.4 is the IPv4 client 1.2.3.4
+    return addr
+
+
+def client_network(ip: str | None = None) -> str:
+    """What rate limits count per: the IPv4 address, or the IPv6 /64 network.
+
+    Anyone with IPv6 can pick any of the 2^64 addresses in their network, so
+    counting single IPv6 addresses would let one device sidestep every limit."""
+    ip = ip or client_ip()
+    addr = _parse_ip(ip)
+    if addr is None:
+        return ip
+    if addr.version == 6:
+        return str(ipaddress.ip_network(f"{addr}/{IPV6_NETWORK_PREFIX}", strict=False))
+    return str(addr)
+
+
+def anonymized_ip(ip: str | None = None) -> str:
+    """The client's network with the host part zeroed (IPv4 /24, IPv6 /48), for the
+    audit log: enough to recognise where logins came from, without the address."""
+    ip = ip or client_ip()
+    addr = _parse_ip(ip)
+    if addr is None:
+        return "unknown"
+    return str(ipaddress.ip_network(f"{addr}/{LOG_PREFIX[addr.version]}", strict=False))
+
+
 def ip_hash(ip: str | None = None) -> str:
-    """Keyed hash of the client IP, so rate-limit tables hold no raw addresses."""
-    return hmac.new(_pepper().encode(), (ip or client_ip()).encode(), hashlib.sha256).hexdigest()
+    """Keyed hash of the client's network (see ``client_network``), so rate-limit
+    tables hold no raw addresses."""
+    return hmac.new(_pepper().encode(), client_network(ip).encode(), hashlib.sha256).hexdigest()
 
 
 # --- rate limiting ---------------------------------------------------------
@@ -67,6 +107,13 @@ def consume(bucket: str, key: str, limit: int, window: float) -> tuple[int, int 
         if len(events) >= limit:
             return max(1, int(events[-limit] + window - now) + 1), None
         return 0, db.insert("INSERT INTO rate_events (bucket, key, ts) VALUES (?, ?, ?)", (bucket, key, now))
+
+
+def attempts(bucket: str, key: str, window: float) -> int:
+    """How many attempts ``key`` has recorded in ``bucket`` within ``window`` seconds."""
+    return get_db().execute(
+        "SELECT COUNT(*) FROM rate_events WHERE bucket = ? AND key = ? AND ts >= ?",
+        (bucket, key, time.time() - window)).fetchone()[0]
 
 
 def release(event_id: int | None) -> None:
@@ -92,6 +139,18 @@ def record_audit(actor: str, action: str, **details) -> None:
 def audit(actor: str, action: str, **details) -> None:
     record_audit(actor, action, **details)
     get_db().commit()
+
+
+def prune_audit_log() -> int:
+    """Delete entries older than AUDIT_LOG_RETENTION_DAYS (0 = keep everything).
+    The log names participants and their emails, so it must not grow forever."""
+    days = current_app.config["AUDIT_LOG_RETENTION_DAYS"]
+    if days <= 0:
+        return 0
+    db = get_db()
+    count = db.execute("DELETE FROM audit_log WHERE ts < ?", (utc_now(-24 * days),)).rowcount
+    db.commit()
+    return count
 
 
 def audit_entries(limit: int = 200) -> list[dict]:

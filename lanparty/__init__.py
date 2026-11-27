@@ -9,7 +9,8 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api import bp as api_bp
-from .db import database_target, init_db, is_postgres
+from .db import database_target, init_db, is_postgres, is_unavailable
+from .i18n import tr
 from . import events, themes
 
 MIN_ADMIN_PASSWORD_LENGTH = 12
@@ -53,6 +54,8 @@ def create_app(config: dict | None = None) -> Flask:
         ADMIN_SESSION_IDLE_MINUTES=_env_int("ADMIN_SESSION_IDLE_MINUTES", 60),
         ADMIN_SESSION_MAX_HOURS=_env_int("ADMIN_SESSION_MAX_HOURS", 12),
         LOGIN_CODE_HOURS=_env_int("LOGIN_CODE_HOURS", 7 * 24),
+        # audit log entries older than this are deleted (0 = keep them all)
+        AUDIT_LOG_RETENTION_DAYS=_env_int("AUDIT_LOG_RETENTION_DAYS", 365),
         # IANA time zone of the event dates (e.g. Europe/Berlin); empty = server time
         TIMEZONE=os.environ.get("TIMEZONE", "").strip(),
         # folder with custom themes (one sub-folder per theme, see THEMES.md)
@@ -145,6 +148,16 @@ def create_app(config: dict | None = None) -> Flask:
     def unexpected_error(err: Exception):
         if isinstance(err, HTTPException):
             return http_error(err)
+        if is_unavailable(err):
+            # lock timeout or database down: tell clients to retry instead of reporting a bug
+            app.logger.warning("Database unavailable: %s", err)
+            if request.path.startswith("/api/"):
+                resp = jsonify(error=tr("The server is temporarily unavailable. Please try again in a moment."))
+            else:
+                resp = app.response_class("Service unavailable", mimetype="text/plain")
+            resp.status_code = 503
+            resp.headers["Retry-After"] = "5"
+            return resp
         app.logger.exception("Unhandled error")
         if request.path.startswith("/api/"):
             return jsonify(error="Internal server error."), 500

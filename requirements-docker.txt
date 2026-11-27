@@ -1,0 +1,3 @@
+# What the Docker image installs: the app plus its production server
+-r requirements.txt
+gunicorn>=27,<28

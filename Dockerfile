@@ -1,5 +1,6 @@
 # LAN party seat registration: gunicorn + PostgreSQL (see docker-compose.yml)
-FROM python:3.13-slim
+# pinned by digest (Dependabot proposes updates); rebuilt with every release
+FROM python:3.13-slim@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -8,8 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt ./
-RUN pip install -r requirements.txt "gunicorn>=27,<28"
+COPY requirements.txt requirements-docker.txt ./
+RUN pip install -r requirements-docker.txt
 
 COPY lanparty ./lanparty
 
