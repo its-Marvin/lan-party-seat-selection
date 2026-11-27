@@ -388,6 +388,9 @@ async function logout() {
   setToken(null);
   state.me = null;
   state.payment = null;
+  // hide name, email and any login link right away, even if the refresh fails
+  renderMe();
+  syncPayDialog();
   try {
     await refresh();
     showMessage($("seat-msg"), t("pub.logout.done"), "success");

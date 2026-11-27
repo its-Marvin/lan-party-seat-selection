@@ -410,6 +410,9 @@ def close_db(_exc=None) -> None:
         conn.close()
 
 
+LEGACY_TOKENS_COPIED = "_legacy_tokens_copied"
+
+
 def _migrate(db) -> None:
     """Create the schema and bring databases created by older versions up to date.
 
@@ -449,12 +452,17 @@ def _migrate(db) -> None:
                 "WHERE paid = 1",
                 (int(DEFAULTS["amount_cents"]),),
             )
-        # every user's original device token keeps working
-        # (WHERE true: SQLite needs it to parse ON CONFLICT after a SELECT)
-        db.execute(
-            "INSERT INTO user_tokens (token_hash, user_id, created_at) "
-            "SELECT token_hash, id, created_at FROM users WHERE true ON CONFLICT DO NOTHING"
-        )
+        # Every user's original device token keeps working: copied once from the
+        # legacy column. Only once, or a token a participant revoked (logout) would
+        # come back at the next start.
+        if not db.execute("SELECT 1 FROM settings WHERE key = ?", (LEGACY_TOKENS_COPIED,)).fetchone():
+            # (WHERE true: SQLite needs it to parse ON CONFLICT after a SELECT)
+            db.execute(
+                "INSERT INTO user_tokens (token_hash, user_id, created_at) "
+                "SELECT token_hash, id, created_at FROM users WHERE true ON CONFLICT DO NOTHING"
+            )
+            db.execute("INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT DO NOTHING",
+                       (LEGACY_TOKENS_COPIED,))
         _migrate_to_events(db, DEFAULTS, columns)
         _anonymize_logged_ips(db)
         if sqlite:

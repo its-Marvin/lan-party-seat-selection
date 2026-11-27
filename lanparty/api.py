@@ -183,11 +183,22 @@ def check_event_code(value, *, raise_when_limited: bool) -> bool:
     if len(code) <= 20 and hmac.compare_digest(code.encode(), expected.encode()):
         sec.release(attempt)
         return True
-    if sec.attempts("event_code_fail", key, EVENT_CODE_WINDOW) == limit:
-        # once per lockout, so admins notice someone guessing the code
-        sec.audit("anonymous", "event_code.limit_reached", network=sec.anonymized_ip(),
-                  attempts=limit, event_id=active_event_id())
+    audit_event_code_lockout(key, limit)
     return False
+
+
+def audit_event_code_lockout(key: str, limit: int) -> None:
+    """Audit a network that used up its event-code attempts, once per lockout.
+    Checked and recorded under the write lock: parallel final guesses all see
+    the full count, but only the first one gets the marker."""
+    if sec.attempts("event_code_fail", key, EVENT_CODE_WINDOW) < limit:
+        return  # cheap check without the lock
+    event_id = active_event_id()
+    with write_transaction():
+        if (sec.attempts("event_code_fail", key, EVENT_CODE_WINDOW) >= limit
+                and sec.mark_once("event_code_lockout", key, EVENT_CODE_WINDOW)):
+            sec.record_audit("anonymous", "event_code.limit_reached", network=sec.anonymized_ip(),
+                             attempts=limit, event_id=event_id)
 
 
 def is_admin_request() -> bool:
@@ -296,11 +307,41 @@ def user_summary(row) -> dict:
 # --- participants --------------------------------------------------------
 
 def issue_token(user_id: int) -> str:
+    """A new device token; call inside ``write_transaction()`` (does not commit)."""
     token = sec.new_secret()
-    db = get_db()
-    db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)", (sec.sha256(token), user_id))
-    db.commit()
+    get_db().execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)",
+                     (sec.sha256(token), user_id))
     return token
+
+
+def revoke_tokens(user_id: int, *, only: str | None = None, keep: str | None = None) -> int:
+    """Delete device tokens of a user (just ``only``, or all but ``keep``; hashes).
+    Inside ``write_transaction()``. The legacy ``users.token_hash`` copy of a revoked
+    token is replaced too, so no migration can ever bring it back."""
+    db = get_db()
+    if only is not None:
+        hashes = [only]
+    else:
+        hashes = [r["token_hash"] for r in db.execute(
+            "SELECT token_hash FROM user_tokens WHERE user_id = ? AND token_hash != ?",
+            (user_id, keep or ""))]
+    for token_hash in hashes:
+        db.execute("DELETE FROM user_tokens WHERE token_hash = ? AND user_id = ?", (token_hash, user_id))
+        # NOT NULL UNIQUE column: a fresh random value that no device holds
+        db.execute("UPDATE users SET token_hash = ? WHERE id = ? AND token_hash = ?",
+                   ("revoked:" + sec.new_secret(), user_id, token_hash))
+    return len(hashes)
+
+
+def current_token_hash() -> str:
+    return sec.sha256(request.headers.get("X-User-Token", ""))
+
+
+def token_still_valid(db, user_id: int) -> bool:
+    """Re-check the caller's token under the write lock: another device may have
+    logged this one out since ``require_user()``."""
+    return db.execute("SELECT 1 FROM user_tokens WHERE token_hash = ? AND user_id = ?",
+                      (current_token_hash(), user_id)).fetchone() is not None
 
 
 def current_user():
@@ -552,6 +593,7 @@ def release_seat():
 # --- one-time login links ------------------------------------------------
 
 def create_login_code(user_id: int) -> tuple[str, str]:
+    """Call inside ``write_transaction()`` (does not commit)."""
     code = sec.new_secret()
     now = time.time()
     expires = now + conf("LOGIN_CODE_HOURS") * 3600
@@ -559,7 +601,6 @@ def create_login_code(user_id: int) -> tuple[str, str]:
     db.execute("DELETE FROM login_codes WHERE expires_at < ?", (now,))
     db.execute("INSERT INTO login_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)",
                (sec.sha256(code), user_id, expires))
-    db.commit()
     return code, utc_iso(datetime.fromtimestamp(expires, timezone.utc).replace(tzinfo=None))
 
 
@@ -585,7 +626,11 @@ def _login_code_attempt():
 def my_login_link():
     user = require_user()
     enforce_limit("login_link", str(user["id"]), 10, 3600, tr("Too many login links requested."))
-    code, expires = create_login_code(user["id"])
+    with write_transaction() as db:
+        # a link created by a device that was just logged out would let it back in
+        if not token_still_valid(db, user["id"]):
+            raise ApiError(401, tr("Please register or log in first."))
+        code, expires = create_login_code(user["id"])
     return jsonify(code=code, expires_at=expires)
 
 
@@ -593,10 +638,8 @@ def my_login_link():
 def my_logout():
     """Log this device out: its token stops working (not only forgotten by the browser)."""
     user = require_user()
-    db = get_db()
-    db.execute("DELETE FROM user_tokens WHERE token_hash = ? AND user_id = ?",
-               (sec.sha256(request.headers["X-User-Token"]), user["id"]))
-    db.commit()
+    with write_transaction():
+        revoke_tokens(user["id"], only=current_token_hash())
     return jsonify(ok=True)
 
 
@@ -605,13 +648,15 @@ def my_logout_others():
     """Log out every other device (e.g. a lost phone) and void unused login links,
     which such a device could have created."""
     user = require_user()
-    db = get_db()
-    devices = db.execute("DELETE FROM user_tokens WHERE user_id = ? AND token_hash != ?",
-                         (user["id"], sec.sha256(request.headers["X-User-Token"]))).rowcount
-    links = db.execute("DELETE FROM login_codes WHERE user_id = ?", (user["id"],)).rowcount
-    sec.record_audit(f"participant:{user['id']}", "user.logged_out_elsewhere", **user_summary(user),
-                     devices=devices, login_links=links)
-    db.commit()
+    # one transaction with the same lock as /login and /me/login-link, so a code
+    # that is being redeemed or created right now can't outlive this
+    with write_transaction() as db:
+        if not token_still_valid(db, user["id"]):
+            raise ApiError(401, tr("Please register or log in first."))
+        devices = revoke_tokens(user["id"], keep=current_token_hash())
+        links = db.execute("DELETE FROM login_codes WHERE user_id = ?", (user["id"],)).rowcount
+        sec.record_audit(f"participant:{user['id']}", "user.logged_out_elsewhere", **user_summary(user),
+                         devices=devices, login_links=links)
     return jsonify(ok=True, devices=devices)
 
 
@@ -631,12 +676,13 @@ def login_with_code():
     row = lookup_login_code(json_body().get("code"))
     if row is None:
         raise ApiError(400, tr("This login link is invalid, expired or has already been used."))
-    db = get_db()
-    deleted = db.execute("DELETE FROM login_codes WHERE code_hash = ?", (row["code_hash"],)).rowcount
-    db.commit()
-    if not deleted:  # used concurrently
-        raise ApiError(400, tr("This login link has already been used."))
-    token = issue_token(row["id"])
+    # using up the code and issuing the token happen under one lock: a concurrent
+    # "log out other devices" either voids the code first or revokes the new token
+    with write_transaction() as db:
+        deleted = db.execute("DELETE FROM login_codes WHERE code_hash = ?", (row["code_hash"],)).rowcount
+        if not deleted:  # used or voided concurrently
+            raise ApiError(400, tr("This login link has already been used."))
+        token = issue_token(row["id"])
     return jsonify(token=token, user=user_dict(get_user(row["id"])))
 
 
@@ -881,8 +927,9 @@ def admin_login_link(user_id):
     user = get_user(user_id)
     if user["event_id"] != active_event_id():
         raise ApiError(409, tr("Login links only work for participants of the active event."))
-    code, expires = create_login_code(user_id)
-    sec.audit(actor(), "user.login_link_created", **user_summary(user))
+    with write_transaction():
+        code, expires = create_login_code(user_id)
+        sec.record_audit(actor(), "user.login_link_created", **user_summary(user))
     return jsonify(code=code, expires_at=expires)
 
 

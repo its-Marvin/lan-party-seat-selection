@@ -116,6 +116,18 @@ def attempts(bucket: str, key: str, window: float) -> int:
         (bucket, key, time.time() - window)).fetchone()[0]
 
 
+def mark_once(bucket: str, key: str, window: float) -> bool:
+    """True the first time ``key`` is marked within ``window`` seconds, then False.
+    Call inside ``db.write_transaction()`` so checking and marking are atomic."""
+    now = time.time()
+    db = get_db()
+    db.execute("DELETE FROM rate_events WHERE bucket = ? AND ts < ?", (bucket, now - window))
+    if db.execute("SELECT 1 FROM rate_events WHERE bucket = ? AND key = ?", (bucket, key)).fetchone():
+        return False
+    db.execute("INSERT INTO rate_events (bucket, key, ts) VALUES (?, ?, ?)", (bucket, key, now))
+    return True
+
+
 def release(event_id: int | None) -> None:
     """Give back an attempt recorded by ``consume`` (e.g. after a successful login)."""
     if event_id is None:

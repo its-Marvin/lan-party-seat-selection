@@ -170,7 +170,11 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   Path=/api) with 60 min idle and 12 h max. Changing `ADMIN_PASSWORD` invalidates all sessions.
   Passwords under 12 characters are refused unless `ALLOW_WEAK_ADMIN_PASSWORD=1` or TESTING.
 - Participants use device tokens (`user_tokens`, stored hashed). `/api/me/logout` deletes this
-  device's token; `/api/me/logout-others` deletes the others and the person's login codes. One-time login links are
+  device's token; `/api/me/logout-others` deletes the others and the person's login codes.
+  Revoke only through `revoke_tokens()`: it also replaces the legacy `users.token_hash` copy.
+  The startup backfill from that column runs **once** (`_legacy_tokens_copied` in `settings`),
+  or revoked tokens would come back. Redeeming a code + issuing the token, re-checking the
+  token + creating a link, and logging out others each run in one `write_transaction()`. One-time login links are
   `/#login=<code>`, kept in the URL fragment so they stay out of server logs. They are valid
   for `LOGIN_CODE_HOURS` (default **168 h = 7 days**, the owner wants at least a week).
 - Strict JSON parsing (rejects NaN/Infinity, overflowing numbers, and NUL characters or lone
@@ -218,6 +222,12 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 ## How the owner likes to work
 
 - The owner writes in English and sometimes German. Answer in the language they use.
+- **Security first.** Write every change with security in mind, not as an afterthought: think
+  about who can call it, what input an attacker controls, races between workers, and what
+  data ends up stored or logged. Check new features against known threat lists such as the
+  [OWASP Top 10](https://owasp.org/Top10/), and repeat a full review of the app regularly (the
+  last one, 2026-11-27, is in PR #11 and `tests/test_owasp.py`). Fix findings with a regression
+  test, and record deliberately accepted risks under "Ideas not done yet".
 - Commit or push **only when asked**. Branch off `main` first, using `feature/...` names. End
   commit messages with the `Co-Authored-By` trailer the harness specifies.
 - PR review loop (GitHub Copilot reviews the PRs):

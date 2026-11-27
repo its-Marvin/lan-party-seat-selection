@@ -326,3 +326,113 @@ def test_compose_drops_privileges():
     for needed in ("read_only: true", "cap_drop: [ALL]", "no-new-privileges:true", "tmpfs:"):
         assert needed in app_service
     assert "cap_drop: [ALL]" in db_service and "no-new-privileges:true" in db_service
+
+
+# --- PR review: revocation must stick ----------------------------------------------
+
+def test_logged_out_token_stays_out_after_a_restart(tmp_path):
+    """The legacy users.token_hash copy used to be put back into user_tokens at startup."""
+    app = make_app(tmp_path)
+    client = app.test_client()
+    headers, _ = register(client, 1)
+    assert client.post("/api/me/logout", headers=headers).status_code == 200
+    restarted = make_app(tmp_path)
+    assert restarted.test_client().get("/api/me", headers=headers).status_code == 401
+
+
+def test_devices_logged_out_elsewhere_stay_out_after_a_restart(tmp_path):
+    app = make_app(tmp_path)
+    client = app.test_client()
+    phone, _ = register(client, 1)      # the registering device: its hash is also in users.token_hash
+    code = client.post("/api/me/login-link", headers=phone).get_json()["code"]
+    laptop = {"X-User-Token": client.post("/api/login", json={"code": code}).get_json()["token"]}
+    assert client.post("/api/me/logout-others", headers=laptop).get_json()["devices"] == 1
+    restarted = make_app(tmp_path).test_client()
+    assert restarted.get("/api/me", headers=phone).status_code == 401
+    assert restarted.get("/api/me", headers=laptop).status_code == 200
+
+
+def _while_creating_a_secret(monkeypatch, action):
+    """Run ``action`` in another thread the first time the current request creates a
+    secret (a token or a login code), i.e. in the middle of that request. Waits
+    briefly: a request that holds the write lock makes the other one wait for it."""
+    import threading
+
+    real = sec.new_secret
+    main = threading.current_thread()
+    state = {"thread": None}
+
+    def hooked():
+        if threading.current_thread() is main and state["thread"] is None:
+            state["thread"] = threading.Thread(target=action)
+            state["thread"].start()
+            state["thread"].join(timeout=0.5)
+        return real()
+
+    monkeypatch.setattr(sec, "new_secret", hooked)
+    return state
+
+
+def test_login_racing_with_logout_others_ends_logged_out(app, client, monkeypatch):
+    """Redeeming a code while the owner logs out other devices: the new device must
+    not end up logged in."""
+    owner, _ = register(client, 1)
+    code = client.post("/api/me/login-link", headers=owner).get_json()["code"]
+    results = {}
+    state = _while_creating_a_secret(monkeypatch, lambda: results.setdefault(
+        "logout", app.test_client().post("/api/me/logout-others", headers=owner).status_code))
+    res = client.post("/api/login", json={"code": code})
+    state["thread"].join()
+    monkeypatch.undo()
+    assert results["logout"] == 200
+    if res.status_code == 200:
+        assert client.get("/api/me", headers={"X-User-Token": res.get_json()["token"]}).status_code == 401
+    else:
+        assert res.status_code == 400
+
+
+def test_login_link_racing_with_logout_others_is_void(app, client, monkeypatch):
+    """A device that is being logged out must not get a working login link out of it."""
+    phone, _ = register(client, 1)
+    code = client.post("/api/me/login-link", headers=phone).get_json()["code"]
+    laptop = {"X-User-Token": client.post("/api/login", json={"code": code}).get_json()["token"]}
+    results = {}
+    state = _while_creating_a_secret(monkeypatch, lambda: results.setdefault(
+        "logout", app.test_client().post("/api/me/logout-others", headers=laptop).status_code))
+    res = client.post("/api/me/login-link", headers=phone)
+    state["thread"].join()
+    monkeypatch.undo()
+    assert results["logout"] == 200
+    if res.status_code == 200:
+        assert client.post("/api/login", json={"code": res.get_json()["code"]}).status_code == 400
+    else:
+        assert res.status_code == 401
+    assert client.get("/api/me", headers=phone).status_code == 401
+
+
+def test_a_logged_out_device_cannot_create_login_links(client):
+    phone, _ = register(client, 1)
+    client.post("/api/me/logout", headers=phone)
+    assert client.post("/api/me/login-link", headers=phone).status_code == 401
+
+
+def test_parallel_final_guesses_audit_the_lockout_once(app):
+    """Both of two parallel last wrong guesses see the full count; only one may audit."""
+    from lanparty import api
+
+    limit = app.config["EVENT_CODE_MAX_PER_IP"]
+    with app.test_request_context(environ_base={"REMOTE_ADDR": "203.0.113.50"}):
+        key = sec.ip_hash()
+        for _ in range(limit):
+            assert sec.consume("event_code_fail", key, limit, api.EVENT_CODE_WINDOW)[0] == 0
+        api.audit_event_code_lockout(key, limit)
+        api.audit_event_code_lockout(key, limit)
+    assert len(audit(app, "event_code.limit_reached")) == 1
+
+
+def test_logout_hides_the_card_before_refreshing():
+    """If the refresh after logging out fails, name, email and login link must
+    already be gone."""
+    script = (ROOT / "lanparty/static/app.js").read_text()
+    body = script.split("async function logout()", 1)[1].split("async function logoutOthers()", 1)[0]
+    assert body.index("renderMe()") < body.index("await refresh()")
