@@ -47,7 +47,7 @@ Requirements from the owner: **no Java**, tests and README required.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest -q                                   # ~365 tests, ~5 s
+.venv/bin/pytest -q                                   # ~410 tests, ~9 s
 # the same suite on PostgreSQL (~30 s; a schema per test, sqlite_only tests skipped):
 docker run -d --rm --name lanparty-pg-test -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:17-alpine
 LANPARTY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/pytest -q
@@ -72,18 +72,26 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/events.py` | Events and their status from dates (`local_now()` in `TIMEZONE`), `active_id()` (cached in `g`), `default_admin_id()`, overlap check, `create()`/`delete()` (no commit) |
 | `lanparty/settings.py` | Per-event settings: `DEFAULTS`, `load(event_id)`, `validate_update(data, event_id)`, `save(values, event_id)` (does **not** commit) |
 | `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `load(event_id)`, `save(layout, moves, event_id)` (no commit) |
-| `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions |
+| `lanparty/security.py` | IP hashing (peppered), rate limits `consume()`/`release()`, audit log, server-side admin sessions, admin password (`check_admin_password()`, scrypt hash in `settings` overrides `ADMIN_PASSWORD`, `password_tag()`) |
+| `lanparty/appsettings.py` | App-wide settings edited on `/admin/settings`, `/admin/mail`, `/admin/security`: `FIELDS` (section, type, env default), `value(key)`, `config_value(CONFIG_KEY)`, `validate_update()`, `save()` (no commit). Stored as `cfg.<key>` in `settings`; unset = `app.config` (env) default |
+| `lanparty/admin_api.py` | Endpoints of the admin areas (config sections, overview, mail queue/test/retry, password, sessions, participant access, security checks); adds routes to the `/api` blueprint |
+| `lanparty/mail.py` | Mail core: `enabled()`/`problems()`, `Mail` blocks → text + HTML in the event theme's light tokens (`palette()`), outbox `enqueue()` (inside the write transaction), `deliver_pending()` (claims rows), `flush_soon()` (background thread; synchronous under TESTING), `transmit()` (SMTP, or `MAIL_BACKEND` console/memory) |
+| `lanparty/notify.py` | The wording of each mail (`tr_in(lang, …)`, participant's `users.lang`): confirmation, payment request/reminder/confirmed, new personal link, admin message, test mail |
+| `lanparty/jobs.py` | Scheduler `python -m lanparty.jobs [--once] [--check]`: expiry, reminders, mail retries, pruning, heartbeat (`_jobs_last_run`) |
+| `lanparty/manage.py` | `python -m lanparty.manage reset-admin-password \| test-mail ADDRESS` |
 | `lanparty/static/common.js` | `api()`, token and event-code storage, `el()`, `showMessage`, `buildArea()` (shared seat-map renderer, optional `view` crop), `contentBounds()` |
 | `lanparty/static/app.js` | Public page: access cards, seat map (fit and crop on phones), payment dialog, login links, 15 s polling |
-| `lanparty/static/admin.js` | Admin page: session, participants table, settings, audit log, unsaved-work handling |
+| `lanparty/static/admin-events.js` | `/admin/events`: session, event switcher, participants table, messages, event settings, unsaved-work handling |
+| `lanparty/static/admin-common.js` | Shared by `/admin`, `/admin/settings`, `/admin/mail`, `/admin/security`: `AdminShell` (login card, keeps form edits across re-login), `configForm()` (renders appsettings fields; label keys in `CONFIG_TEXT`) |
+| `lanparty/static/admin-{overview,settings,mail,security}.js` | One script per admin area (the audit log is on the security page) |
 | `lanparty/static/layout-editor.js` | Drag-and-drop layout editor (`window.LayoutEditor`) |
-| `lanparty/i18n.py` | Server translations: `tr(template, **params)` (English template = key into `lanparty/locales/<lang>.json`), `N_()` marks constants; language from `X-Lang`, else `Accept-Language` |
+| `lanparty/i18n.py` | Server translations: `tr(template, **params)` (English template = key into `lanparty/locales/<lang>.json`), `tr_in(lang, template, …)` for mails, `N_()` marks constants; language from `X-Lang`, else `Accept-Language` |
 | `lanparty/static/i18n.js` | Browser translations: `t(key, params)`, `tNodes()` (placeholders as DOM nodes), plural via `key.one/.other`, applies `data-i18n*` attributes on DOMContentLoaded; language switch reloads the page |
 | `lanparty/static/locales/*.js` | Browser catalogs (`en-US`, `de-DE`), plain JSON inside `I18N.add(...)` |
 | `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
 | `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
 | `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
-| `tests/` | `test_owasp.py` (regressions from the OWASP Top 10 review), `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_database` (adapter, schema parity, portable SQL, Docker files), `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
+| `tests/` | `test_mail.py` (mail flows, admin areas, scheduler; mails land in `app.extensions["sent_mail"]`), `test_owasp.py` (regressions from the OWASP Top 10 review), `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_database` (adapter, schema parity, portable SQL, Docker files), `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
 
 ## Rules that must not break
 
@@ -187,6 +195,28 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   use `security.record_audit()` (no commit), so the entry describes exactly the change made under
   that lock; `assign_seat()` audits seat moves and paid switches that way.
 
+### Mail and app-wide settings
+- Mail is optional; every mail feature must degrade to the old behaviour when `mail.enabled()` is
+  false. Mail config lives **only** in the admin area (`appsettings`), never in env (except the
+  development `MAIL_BACKEND=console`; tests use `memory`).
+- Queue mails with the `notify.*` functions **inside** the write transaction of the change they
+  report, then call `mail.flush_soon()` after it. Never talk to the mail server while holding the
+  write lock (`deliver_pending()` commits its claim before sending).
+- Registrations with mail need confirmation: `confirm_until` set, `email_confirmed_at` NULL
+  (`pending_confirmation()`). Their seat is held, but `reserved_at` stays NULL until confirmation,
+  which starts the payment window. Expired ones are deleted (`expire_unconfirmed()`). A confirmed
+  payment also confirms the address.
+- A new payment window (`reserved_at` changed in `assign_seat`, or confirmation) mails the payment
+  request; reminders go once per window (`reminder_sent_at < reserved_at`).
+- Personal links (`users.access_code_hash`) are reusable until the event ends; replacing them
+  (logout-others, admin reset) mails a new one when mail is on.
+- Runtime settings with an env default: read them through `appsettings.value()` /
+  `api.conf()` (which goes through `config_value()`), not `current_app.config`.
+- Secrets in appsettings are write-only: `Field.public()` never returns them, the audit says
+  "(changed)". The admin password goes through `security.set_admin_password()` (scrypt), and
+  changing it ends every session (`password_tag()`).
+- Theme values reach mails only via `mail.palette()`, which drops anything but plain values.
+
 ### Translations
 - **No user-visible string literals** in JS or HTML. Use `t("key")` / `tNodes()` in scripts and
   `data-i18n` / `data-i18n-html` / `data-i18n-attr` in HTML (wrap label text in a `<span>` so the
@@ -194,6 +224,8 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Server messages that reach users go through `tr("English template {x}", x=…)` (or `N_()` for
   constants). Add the German text to `lanparty/locales/de-DE.json`. Audit log entries stay English.
 - Don't name a local variable `t` where `t()` is needed (it shadows the global translator).
+- Mail texts use `tr_in(lang, "…")` (found by `tests/test_i18n.py` like `tr`). Greetings end with
+  a comma, so the next sentence starts in lower case in both languages.
 - Dates and money use `window.I18N.lang` (`formatDateTime`, `formatMoney` in `common.js`).
 - German uses informal "du". `tests/test_i18n.py` checks completeness, unused keys and placeholders.
 
@@ -213,7 +245,9 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   page doesn't load event themes. Theme files are served only with allowlisted extensions.
 - Public-page polling skips unchanged panels (fingerprints in `rendered`) and keeps focus via
   `data-focus-key` and `keepFocus()`. Keep this when re-rendering.
-- Admin page: never show admin data without a session. Unsaved layout or settings changes stay
+- Admin pages: `/admin` (login + overview), `/admin/events`, `/admin/settings`, `/admin/mail`,
+  `/admin/security`, each a static HTML page with the same header and login card. Never show
+  admin data without a session. Unsaved layout or settings changes stay
   in memory across a re-login (`LayoutEditor.isDirty()`, `settingsDirty`). Lock forms or
   snapshot drafts while a save is pending.
 - Mobile: no horizontal page scroll down to 320 px. Admin tables use `table.stack` plus
@@ -257,14 +291,16 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Everything is merged into `main`: #1 (the app), #2 (mobile layout, paid seat switching,
   Auto/Light/Dark, 7-day login links), #3 (several events, `TIMEZONE`), #4 (per-event themes,
   `THEMES_DIR`, retro theme, `THEMES.md`), #5 (English/German), #10 (Docker + PostgreSQL, CI,
-  release-only image publishing, required admin name), #11 (OWASP Top 10 fixes: IPv6 /64 rate
-  limits, audit-log privacy and retention, participant logout, input checks, 503 on DB outages,
-  Dependabot, pip-audit, SHA-pinned actions, hardened compose; README overview with
-  screenshots) and the follow-up that updated this section. After the stack went wrong (see
-  below), #3 and #4 reached `main` through #7, and #5 through #8. All review threads are resolved.
-- No feature branches of ours are left. Dependabot opens weekly update PRs (the first, #12,
-  bumps the Python group). Merging them is the owner's call; it publishes no image.
-- The OWASP fixes are not in a published image until the next GitHub release.
+  release-only image publishing, required admin name), #11 (OWASP Top 10 fixes, README overview
+  with screenshots), #13 (AGENTS.md state) and the mail PR from `feature/mail`: optional mail
+  (confirmation within 2 h, payment request, reminders, seat confirmation with a personal link,
+  admin messages, themed mails, scheduler service), admin areas `/admin/events`, `/settings`,
+  `/mail`, `/security` (admin password in the DB, sessions, participant access, checks), default
+  payment window one week. After the stack went wrong (see below), #3 and #4 reached `main`
+  through #7, and #5 through #8. All review threads are resolved.
+- Dependabot opens weekly update PRs (the first, #12, bumps the Python group). Merging them is the
+  owner's call; it publishes no image.
+- Nothing since #10 is in a published image until the next GitHub release.
 - Stacked PRs, lessons learned: merge them bottom-up, and delete each head branch right after
   its merge, so GitHub moves the next PR's base to `main`. A PR merged into an already-merged
   base never reaches `main`. PRs in a GitHub *stack* can't have their base changed, and
@@ -275,7 +311,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 
 - A tool to copy an existing SQLite database into PostgreSQL. New Postgres databases start empty.
 - A cut-off for self-service seat switching (for example none after the event starts).
-- Email delivery of login links. Currently admins copy the link manually.
+- Mailing the one-time login links that admins create (they still copy them by hand).
 - Translating event content (name, description) per language; translating audit log actions.
 - From the OWASP review, deliberately left open: verifying participant emails, personal admin
   accounts or a second factor, signed images / SBOM, a global cap on wrong event codes (it would

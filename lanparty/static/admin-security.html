@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Party – Admin: Security</title>
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/locales/en-US.js"></script>
+  <script src="/static/locales/de-DE.js"></script>
+  <script src="/static/common.js" defer></script>
+  <script src="/static/admin-common.js" defer></script>
+  <script src="/static/admin-security.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap header-row">
+      <h1 data-i18n="admin.securityPage.heading">Security</h1>
+      <div class="header-actions">
+        <a href="/" data-i18n="admin.publicPage">← Public page</a>
+        <div class="header-switches">
+          <select id="lang-select" aria-label="Language" data-i18n-attr="aria-label:common.language">
+            <option value="en-US">English</option>
+            <option value="de-DE">Deutsch</option>
+          </select>
+          <select id="mode-select" aria-label="Colour mode" data-i18n-attr="aria-label:common.mode">
+            <option value="auto" data-i18n="common.mode.auto">◐ Auto</option>
+            <option value="light" data-i18n="common.mode.light">☀ Light</option>
+            <option value="dark" data-i18n="common.mode.dark">☾ Dark</option>
+          </select>
+        </div>
+        <span id="session-controls" hidden>
+          <span class="muted small" id="actor"></span>
+          <button type="button" id="logout" data-i18n="admin.logout">Log out</button>
+          <button type="button" id="logout-all" data-i18n="admin.logoutAll" data-i18n-attr="title:admin.logoutAllTitle"
+                  title="End every admin session, e.g. after a device was lost">Log out everywhere</button>
+        </span>
+      </div>
+    </div>
+    <nav class="wrap admin-nav" id="admin-nav" hidden aria-label="Admin areas" data-i18n-attr="aria-label:admin.nav.label">
+      <a href="/admin" data-i18n="admin.nav.overview">Overview</a>
+      <a href="/admin/events" data-i18n="admin.nav.events">Events</a>
+      <a href="/admin/settings" data-i18n="admin.nav.settings">Settings</a>
+      <a href="/admin/mail" data-i18n="admin.nav.mail">Mail</a>
+      <a href="/admin/security" data-i18n="admin.nav.security">Security</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="card" id="login-card" hidden>
+      <h2 data-i18n="admin.login.title">Log in</h2>
+      <form id="login-form" class="form-row">
+        <label><span data-i18n="admin.login.name">Your name (for the audit log)</span>
+          <input name="name" maxlength="40" required autocomplete="name"></label>
+        <label><span data-i18n="admin.login.password">Password</span>
+          <input type="password" name="password" required autocomplete="current-password"></label>
+        <button class="primary" data-i18n="admin.login.submit">Log in</button>
+      </form>
+      <p id="login-msg" class="message"></p>
+    </section>
+
+    <div id="admin-area" hidden>
+      <section class="card">
+        <div class="header-row">
+          <h2 data-i18n="admin.securityPage.checksTitle">Checks</h2>
+          <button type="button" id="refresh-checks" data-i18n="admin.audit.refresh">Refresh</button>
+        </div>
+        <ul class="checks" id="checks"></ul>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="admin.securityPage.passwordTitle">Admin password</h2>
+        <p class="muted small" id="password-source"></p>
+        <form id="password-form" class="settings">
+          <fieldset>
+            <legend data-i18n="admin.securityPage.passwordLegend">Change the password</legend>
+            <label><span data-i18n="admin.securityPage.current">Current password</span>
+              <input type="password" name="current" required autocomplete="current-password"></label>
+            <label><span data-i18n="admin.securityPage.new">New password (at least 12 characters)</span>
+              <input type="password" name="new" required minlength="12" maxlength="200" autocomplete="new-password"></label>
+            <label><span data-i18n="admin.securityPage.repeat">Repeat the new password</span>
+              <input type="password" name="repeat" required minlength="12" maxlength="200" autocomplete="new-password"></label>
+          </fieldset>
+          <p class="muted small" data-i18n="admin.securityPage.passwordHelp">All admins share this password. Changing it logs out every other admin session; you stay logged in. Forgot it? On the server, python -m lanparty.manage reset-admin-password makes ADMIN_PASSWORD from the environment work again.</p>
+          <div class="actions"><button class="primary" data-i18n="admin.securityPage.change">Change password</button></div>
+        </form>
+        <p id="password-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="admin.securityPage.sessionsTitle">Admin sessions</h2>
+        <div class="table-wrap">
+          <table class="stack">
+            <thead><tr>
+              <th data-i18n="admin.securityPage.who">Admin</th><th data-i18n="admin.securityPage.since">Logged in</th>
+              <th data-i18n="admin.securityPage.lastSeen">Last active</th><th data-i18n="admin.users.actions">Actions</th>
+            </tr></thead>
+            <tbody id="sessions"></tbody>
+          </table>
+        </div>
+        <p id="sessions-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="admin.securityPage.accessTitle">Participants' access</h2>
+        <p class="muted small" data-i18n="admin.securityPage.accessHelp">If links were passed around or a device got into the wrong hands: make the participants' ways in stop working, for one event.</p>
+        <div class="settings">
+          <fieldset>
+            <legend data-i18n="admin.securityPage.accessLegend">Event</legend>
+            <label><span data-i18n="admin.securityPage.forEvent">For the event</span> <select id="access-event"></select></label>
+            <div class="access-actions full">
+              <p><button type="button" data-action="login_links" data-i18n="admin.securityPage.voidLoginLinks">Void unused login links</button>
+                <span class="muted small" data-i18n="admin.securityPage.voidLoginLinksHelp">One-time links created by participants or admins.</span></p>
+              <p><button type="button" data-action="personal_links" data-i18n="admin.securityPage.voidPersonal">Replace personal links</button>
+                <label class="checkbox inline" id="resend-row" hidden><input type="checkbox" id="resend-links" checked>
+                  <span data-i18n="admin.securityPage.resend">mail the new links</span></label>
+                <span class="muted small" data-i18n="admin.securityPage.voidPersonalHelp">The links from the payment confirmation mails.</span></p>
+              <p><button type="button" class="danger" data-action="devices" data-i18n="admin.securityPage.logoutDevices">Log out all participants</button>
+                <span class="muted small" data-i18n="admin.securityPage.logoutDevicesHelp">Every device is logged out; people get back in with their personal link or a login link from you.</span></p>
+            </div>
+          </fieldset>
+        </div>
+        <p id="access-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="admin.securityPage.limitsTitle">Limits and timeouts</h2>
+        <p class="muted small" data-i18n="admin.securityPage.limitsHelp">Rate limits count per IPv4 address or IPv6 /64 network. Values set in the environment are the defaults until you save here.</p>
+        <form id="limits-form" class="settings">
+          <fieldset id="limits-fields">
+            <legend data-i18n="admin.securityPage.limitsLegend">Limits</legend>
+          </fieldset>
+          <div class="actions"><button class="primary" data-i18n="admin.cfg.save">Save</button></div>
+        </form>
+        <p id="limits-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <div class="header-row">
+          <h2 data-i18n="admin.audit.title">Audit log</h2>
+          <button type="button" id="refresh-audit" data-i18n="admin.audit.refresh">Refresh</button>
+        </div>
+        <p class="muted small" data-i18n="admin.audit.help">Latest 200 entries: admin logins (including failed attempts), payments, moves,
+          removals, login links, settings and layout changes, and automatically released reservations.</p>
+        <div class="table-wrap">
+          <table class="audit-table stack">
+            <thead><tr>
+              <th data-i18n="admin.audit.time">Time</th><th data-i18n="admin.audit.who">Who</th>
+              <th data-i18n="admin.audit.action">Action</th><th data-i18n="admin.audit.details">Details</th>
+            </tr></thead>
+            <tbody id="audit"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

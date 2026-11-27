@@ -12,6 +12,7 @@ import time
 
 from flask import current_app, request
 
+from . import appsettings
 from .db import get_db, utc_now, write_transaction
 
 PEPPER_KEY = "_ip_pepper"
@@ -156,7 +157,7 @@ def audit(actor: str, action: str, **details) -> None:
 def prune_audit_log() -> int:
     """Delete entries older than AUDIT_LOG_RETENTION_DAYS (0 = keep everything).
     The log names participants and their emails, so it must not grow forever."""
-    days = current_app.config["AUDIT_LOG_RETENTION_DAYS"]
+    days = appsettings.value("audit_log_retention_days")
     if days <= 0:
         return 0
     db = get_db()
@@ -178,10 +179,70 @@ def audit_entries(limit: int = 200) -> list[dict]:
 
 # --- admin sessions --------------------------------------------------------
 
+ADMIN_HASH_KEY = "_admin_password"            # scrypt hash, set on /admin/security
+ADMIN_CHANGED_KEY = "_admin_password_changed"
+MIN_PASSWORD_LENGTH = 12
+SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1}
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, maxmem=64 * 1024 * 1024, dklen=32, **SCRYPT)
+    return f"scrypt${SCRYPT['n']}${SCRYPT['r']}${SCRYPT['p']}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        _, n, r, p, salt, digest = stored.split("$")
+        candidate = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p),
+                                   maxmem=64 * 1024 * 1024, dklen=32)
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(candidate.hex(), digest)
+
+
+def _setting(key: str) -> str | None:
+    row = get_db().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def admin_password_info() -> dict:
+    """Where the admin password comes from: ``admin`` (set on /admin/security),
+    ``environment`` (ADMIN_PASSWORD) or None (admin area disabled)."""
+    if _setting(ADMIN_HASH_KEY):
+        return {"source": "admin", "changed_at": _setting(ADMIN_CHANGED_KEY)}
+    return {"source": "environment" if current_app.config["ADMIN_PASSWORD"] else None, "changed_at": None}
+
+
+def admin_enabled() -> bool:
+    return admin_password_info()["source"] is not None
+
+
+def check_admin_password(password: str) -> bool:
+    stored = _setting(ADMIN_HASH_KEY)
+    if stored:
+        return verify_password(password, stored)
+    expected = current_app.config["ADMIN_PASSWORD"]
+    # compare digests, so the comparison takes the same time whatever the lengths
+    return bool(expected) and hmac.compare_digest(sha256(password), sha256(expected))
+
+
+def set_admin_password(password: str | None) -> None:
+    """Store a new admin password (None: forget it, ADMIN_PASSWORD applies again).
+    Every session ends, because the password tag changes."""
+    db = get_db()
+    if password is None:
+        db.execute("DELETE FROM settings WHERE key IN (?, ?)", (ADMIN_HASH_KEY, ADMIN_CHANGED_KEY))
+    else:
+        for key, value in ((ADMIN_HASH_KEY, hash_password(password)), (ADMIN_CHANGED_KEY, utc_now())):
+            db.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
+                       "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+
 def password_tag() -> str:
-    """Fingerprint of the configured admin password; changing it ends all sessions."""
-    return hmac.new(_pepper().encode(), current_app.config["ADMIN_PASSWORD"].encode(),
-                    hashlib.sha256).hexdigest()
+    """Fingerprint of the current admin password; changing it ends all sessions."""
+    source = _setting(ADMIN_HASH_KEY) or current_app.config["ADMIN_PASSWORD"]
+    return hmac.new(_pepper().encode(), source.encode(), hashlib.sha256).hexdigest()
 
 
 def create_admin_session(actor: str) -> str:
@@ -205,13 +266,12 @@ def current_admin_session(refresh: bool = True):
     token = request.cookies.get(ADMIN_COOKIE)
     if not token:
         return None
-    cfg = current_app.config
     now = time.time()
     db = get_db()
     db.execute(
         "DELETE FROM admin_sessions WHERE last_seen < ? OR created_at < ? OR password_tag != ?",
-        (now - cfg["ADMIN_SESSION_IDLE_MINUTES"] * 60,
-         now - cfg["ADMIN_SESSION_MAX_HOURS"] * 3600,
+        (now - appsettings.value("admin_session_idle_minutes") * 60,
+         now - appsettings.value("admin_session_max_hours") * 3600,
          password_tag()),
     )
     row = db.execute("SELECT * FROM admin_sessions WHERE token_hash = ?", (sha256(token),)).fetchone()

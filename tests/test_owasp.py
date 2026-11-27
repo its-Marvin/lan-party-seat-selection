@@ -154,7 +154,7 @@ def test_reaching_the_event_code_limit_is_audited_once(app, client):
     assert len(entries) == 1
     assert entries[0]["network"] == "203.0.113.0/24" and entries[0]["attempts"] == limit
     # the admin page highlights it
-    assert '"event_code.limit_reached"' in (ROOT / "lanparty/static/admin.js").read_text()
+    assert '"event_code.limit_reached"' in (ROOT / "lanparty/static/admin-security.js").read_text()
 
 
 def test_old_audit_entries_are_deleted(app, client):
@@ -254,7 +254,7 @@ def test_unusual_but_valid_emails_still_work(client, email):
 
 
 def test_admin_mail_links_escape_the_address():
-    script = (ROOT / "lanparty/static/admin.js").read_text()
+    script = (ROOT / "lanparty/static/admin-events.js").read_text()
     assert "mailtoHref(u.email)" in script and "`mailto:${" not in script
 
 

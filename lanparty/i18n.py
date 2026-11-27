@@ -42,7 +42,13 @@ def request_language() -> str:
 
 def tr(template: str, **params) -> str:
     """Translate ``template`` into the request's language and fill in ``params``."""
-    lang = request_language()
+    return tr_in(request_language(), template, **params)
+
+
+def tr_in(lang: str, template: str, **params) -> str:
+    """Translate into a given language (e.g. a participant's, for an email)."""
+    if lang not in LANGUAGES:
+        lang = DEFAULT_LANGUAGE
     text = template if lang == DEFAULT_LANGUAGE else catalog(lang).get(template, template)
     return text.format(**params) if params else text
 

@@ -31,10 +31,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    environment:
+    environment: &app-environment
       # the password comes from PGPASSWORD, so it needs no URL escaping
       DATABASE_URL: postgresql://lanparty@db:5432/lanparty
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # start password; set your own on /admin/security
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
       TIMEZONE: ${TIMEZONE:-UTC}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-0}
@@ -49,6 +50,29 @@ services:
     security_opt: ["no-new-privileges:true"]
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-8000}:8000"
+
+  # scheduled jobs: payment reminders, retrying failed mails, expiring registrations
+  # (python -m lanparty.jobs, once a minute); same image and settings as the app
+  scheduler:
+    image: ghcr.io/its-marvin/lan-party-seat-selection:${LANPARTY_VERSION:-latest}
+    restart: unless-stopped
+    command: ["python", "-m", "lanparty.jobs"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *app-environment
+    volumes:
+      - ./themes:/data/themes:ro      # mails use the event's theme
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "lanparty.jobs", "--check"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
 
 volumes:
   db-data:

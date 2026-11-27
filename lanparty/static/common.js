@@ -198,3 +198,10 @@ function buildArea(layout, { renderSeat, decorateGroup, decorateItem, view } = {
   }
   return area;
 }
+
+/** Admin pages: highlight the current area in the navigation. */
+function markAdminNav() {
+  for (const link of document.querySelectorAll(".admin-nav a")) {
+    if (link.getAttribute("href") === location.pathname) link.setAttribute("aria-current", "page");
+  }
+}

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LAN Party – Admin: Mail</title>
+  <meta name="color-scheme" content="dark light">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/theme.js"></script>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/locales/en-US.js"></script>
+  <script src="/static/locales/de-DE.js"></script>
+  <script src="/static/common.js" defer></script>
+  <script src="/static/admin-common.js" defer></script>
+  <script src="/static/admin-mail.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap header-row">
+      <h1 data-i18n="admin.mailPage.heading">Mail</h1>
+      <div class="header-actions">
+        <a href="/" data-i18n="admin.publicPage">← Public page</a>
+        <div class="header-switches">
+          <select id="lang-select" aria-label="Language" data-i18n-attr="aria-label:common.language">
+            <option value="en-US">English</option>
+            <option value="de-DE">Deutsch</option>
+          </select>
+          <select id="mode-select" aria-label="Colour mode" data-i18n-attr="aria-label:common.mode">
+            <option value="auto" data-i18n="common.mode.auto">◐ Auto</option>
+            <option value="light" data-i18n="common.mode.light">☀ Light</option>
+            <option value="dark" data-i18n="common.mode.dark">☾ Dark</option>
+          </select>
+        </div>
+        <span id="session-controls" hidden>
+          <span class="muted small" id="actor"></span>
+          <button type="button" id="logout" data-i18n="admin.logout">Log out</button>
+          <button type="button" id="logout-all" data-i18n="admin.logoutAll" data-i18n-attr="title:admin.logoutAllTitle"
+                  title="End every admin session, e.g. after a device was lost">Log out everywhere</button>
+        </span>
+      </div>
+    </div>
+    <nav class="wrap admin-nav" id="admin-nav" hidden aria-label="Admin areas" data-i18n-attr="aria-label:admin.nav.label">
+      <a href="/admin" data-i18n="admin.nav.overview">Overview</a>
+      <a href="/admin/events" data-i18n="admin.nav.events">Events</a>
+      <a href="/admin/settings" data-i18n="admin.nav.settings">Settings</a>
+      <a href="/admin/mail" data-i18n="admin.nav.mail">Mail</a>
+      <a href="/admin/security" data-i18n="admin.nav.security">Security</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="card" id="login-card" hidden>
+      <h2 data-i18n="admin.login.title">Log in</h2>
+      <form id="login-form" class="form-row">
+        <label><span data-i18n="admin.login.name">Your name (for the audit log)</span>
+          <input name="name" maxlength="40" required autocomplete="name"></label>
+        <label><span data-i18n="admin.login.password">Password</span>
+          <input type="password" name="password" required autocomplete="current-password"></label>
+        <button class="primary" data-i18n="admin.login.submit">Log in</button>
+      </form>
+      <p id="login-msg" class="message"></p>
+    </section>
+
+    <div id="admin-area" hidden>
+      <section class="card">
+        <h2 data-i18n="admin.mailPage.status">Status</h2>
+        <ul class="checks" id="mail-status"></ul>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="admin.mailPage.title">Mail settings</h2>
+        <p class="muted small" data-i18n="admin.mailPage.help">With mail switched on, participants confirm their email address after registering, get the payment details and a seat confirmation with a personal link by mail, and admins can write to them. Mails use the theme of their event.</p>
+        <form id="mail-form" class="settings">
+          <fieldset id="mail-fields">
+            <legend data-i18n="admin.mailPage.legend">Mail server and mails</legend>
+          </fieldset>
+          <div class="actions"><button class="primary" data-i18n="admin.cfg.save">Save</button></div>
+        </form>
+        <p id="mail-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <h2 data-i18n="admin.mailPage.testTitle">Test mail</h2>
+        <form id="test-form" class="form-row">
+          <label><span data-i18n="admin.mailPage.testTo">Send a test mail to</span>
+            <input name="to" type="email" required maxlength="200" autocomplete="email"></label>
+          <button data-i18n="admin.mailPage.testSend">Send test mail</button>
+        </form>
+        <p id="test-msg" class="message"></p>
+      </section>
+
+      <section class="card">
+        <div class="header-row">
+          <h2 data-i18n="admin.mailPage.queueTitle">Mails not sent yet</h2>
+          <span>
+            <button type="button" id="refresh-queue" data-i18n="admin.audit.refresh">Refresh</button>
+            <button type="button" id="retry-queue" data-i18n="admin.mailPage.retry">Try failed mails again</button>
+          </span>
+        </div>
+        <p class="muted small" data-i18n="admin.mailPage.queueHelp">Mails are sent right away; failed ones are tried again by the scheduler, up to 8 times. Sent mails are deleted after 30 days.</p>
+        <div class="table-wrap">
+          <table class="stack">
+            <thead><tr>
+              <th data-i18n="admin.mailPage.queued">Queued</th><th data-i18n="admin.mailPage.to">To</th>
+              <th data-i18n="admin.mailPage.subject">Subject</th><th data-i18n="admin.mailPage.state">State</th>
+            </tr></thead>
+            <tbody id="queue"></tbody>
+          </table>
+        </div>
+        <p id="queue-msg" class="message"></p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

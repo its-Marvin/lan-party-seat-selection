@@ -16,7 +16,8 @@ DEFAULTS = {
     "description": "",
     "paypal_address": "",
     "amount_cents": "2000",
-    "reservation_hours": "48",
+    "reservation_hours": "168",  # one week to pay
+    "payment_reminders": "0",     # mail a reminder before the payment deadline (needs mail)
     "event_code": "",
     "theme": "default",         # folder name of the theme (see themes.py)
 }
@@ -63,6 +64,7 @@ def from_rows(rows) -> dict:
         "reservation_hours": int(raw["reservation_hours"]),
         "event_code": raw["event_code"],
         "theme": raw["theme"],
+        "payment_reminders": raw["payment_reminders"] == "1",
     }
 
 
@@ -137,6 +139,10 @@ def validate_update(data: dict, event_id: int) -> dict:
                 f"Reservation time must be a whole number of hours between 0 and {MAX_RESERVATION_HOURS}."
             )
         out["reservation_hours"] = str(hours)
+    if "payment_reminders" in data:
+        if not isinstance(data["payment_reminders"], bool):
+            raise SettingsError(tr("'payment_reminders' must be true or false."))
+        out["payment_reminders"] = "1" if data["payment_reminders"] else "0"
     if "theme" in data:
         from . import themes
 

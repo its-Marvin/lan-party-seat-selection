@@ -40,7 +40,11 @@ def register(client, name="Alice", email="alice@example.com"):
 
 def test_pages_are_served(client):
     assert b"seat-map" in client.get("/").data
-    assert b"settings-form" in client.get("/admin").data
+    assert b"login-form" in client.get("/admin").data
+    assert b"settings-form" in client.get("/admin/events").data
+    for area in ("settings", "mail", "security"):
+        assert b"admin-common.js" in client.get(f"/admin/{area}").data
+    assert client.get("/admin/nonsense").status_code == 404
     assert client.get("/static/app.js").status_code == 200
 
 

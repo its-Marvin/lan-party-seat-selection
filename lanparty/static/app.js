@@ -6,16 +6,23 @@ const rendered = { userId: undefined, me: null, seats: null };
 const $ = (id) => document.getElementById(id);
 
 /**
- * One-time login links look like /#login=<code>. The part after "#" is never
- * sent to the server, so the code does not end up in access logs.
+ * Links from mails and admins carry a code in the URL fragment, which is never
+ * sent to the server, so codes don't end up in access logs:
+ *   #login=<code>    one-time login link
+ *   #access=<code>   personal link from the payment confirmation (reusable)
+ *   #confirm=<code>  email confirmation after registering
  */
+const LINK_RE = /^#(login|access|confirm)=([A-Za-z0-9_-]+)$/;
+
 async function handleLoginLink() {
-  const match = /^#login=([A-Za-z0-9_-]+)$/.exec(location.hash);
+  const match = LINK_RE.exec(location.hash);
   if (!match) return;
   history.replaceState(null, "", location.pathname + location.search);
-  const code = match[1];
+  const [, kind, code] = match;
+  if (kind === "confirm") return confirmEmail(code);
+  const base = kind === "login" ? "/login" : "/access";
   try {
-    const target = await api("POST", "/login/preview", { code });
+    const target = await api("POST", `${base}/preview`, { code });
     if (getToken()) {
       await loadMe();
       if (state.me && state.me.id === target.user_id) {
@@ -26,11 +33,41 @@ async function handleLoginLink() {
         return;
       }
     }
-    const data = await api("POST", "/login", { code });
+    const data = await api("POST", base, { code });
     setToken(data.token);
     state.me = null;
   } catch (err) {
     alert(err.message);
+  }
+}
+
+/** Confirm the email address; logs this browser in unless it belongs to someone else. */
+async function confirmEmail(code) {
+  try {
+    if (getToken()) await loadMe();
+    const current = state.me;
+    const data = await api("POST", "/confirm", { code, login: !current });
+    if (data.token) setToken(data.token);
+    state.me = null;
+    if (current && current.id !== data.user.id) {
+      showMessage($("seat-msg"), t("pub.confirm.doneOther", { name: data.user.name, current: current.name }), "success");
+    } else {
+      showMessage($("me-msg"), t(data.user.seat ? "pub.confirm.doneSeat" : "pub.confirm.doneNoSeat"), "success");
+    }
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+/** Send the confirmation mail again (the deadline stays the same). */
+async function resendConfirmation() {
+  const msg = $("me-msg");
+  showMessage(msg, "");
+  try {
+    await api("POST", "/me/confirmation");
+    showMessage(msg, t("pub.confirm.resent", { email: state.me.email }), "success");
+  } catch (err) {
+    showMessage(msg, err.message);
   }
 }
 
@@ -131,12 +168,21 @@ function renderMe() {
   details.replaceChildren(
     el("p", {}, el("strong", {}, me.name), " ", el("span", { class: "muted" }, `<${me.email}>`)),
   );
+  if (me.confirm_until) {
+    // registered with mail: the address must be confirmed before the deadline
+    details.append(el("div", { class: "notice" },
+      el("p", {}, tNodes("pub.me.confirmPending", {
+        email: el("strong", {}, me.email), deadline: el("strong", {}, formatDeadline(me.confirm_until)),
+      })),
+      el("p", {}, el("button", { type: "button", dataset: { focusKey: "resend" }, onclick: resendConfirmation },
+        t("pub.me.resend")))));
+  }
   if (!me.seat) {
     details.append(el("p", {}, t("pub.me.noSeat")));
   } else {
     const status = me.paid
       ? el("span", { class: "badge paid" }, t("pub.me.paid"))
-      : el("span", { class: "badge reserved" }, t("pub.me.pending"));
+      : el("span", { class: "badge reserved" }, t(me.confirm_until ? "pub.me.held" : "pub.me.pending"));
     details.append(el("p", {}, tNodes("pub.me.seat", { seat: el("strong", {}, me.seat), status })));
     if (!me.paid && me.reserved_until) {
       details.append(el("p", { class: "small" },
@@ -145,6 +191,10 @@ function renderMe() {
     if (me.paid) {
       details.append(el("p", { class: "small muted" },
         t("pub.me.switchPaid")));
+    } else if (me.confirm_until) {
+      details.append(el("p", {},
+        el("button", { type: "button", class: "danger", dataset: { focusKey: "release" }, onclick: releaseSeat },
+          t("pub.me.release"))));
     } else {
       details.append(el("p", {},
         el("button", { type: "button", dataset: { focusKey: "pay" }, onclick: () => openPayDialog() },
@@ -308,7 +358,12 @@ async function pickSeat(seatId) {
     state.payment = data.payment;
     renderMe();
     await loadSeats();
-    openPayDialog();
+    if (data.payment) {
+      openPayDialog();
+    } else if (data.user.confirm_until) {
+      showMessage(msg, t("pub.seats.heldUnconfirmed", { seat: seatId, deadline: formatDeadline(data.user.confirm_until) }),
+        "info");
+    }
   } catch (err) {
     showMessage(msg, err.message);
     await loadSeats();
@@ -405,9 +460,10 @@ async function logoutOthers() {
   showMessage(msg, "");
   if (!confirm(t("pub.logout.othersConfirm"))) return;
   try {
-    const { devices } = await api("POST", "/me/logout-others");
+    const { devices, new_link_sent: newLink } = await api("POST", "/me/logout-others");
     resetLoginLinkBox();   // its link no longer works
-    showMessage(msg, devices ? t("pub.logout.othersDone", { count: devices }) : t("pub.logout.othersNone"), "success");
+    const text = devices ? t("pub.logout.othersDone", { count: devices }) : t("pub.logout.othersNone");
+    showMessage(msg, newLink ? `${text} ${t("pub.logout.newLinkSent")}` : text, "success");
   } catch (err) {
     showMessage(msg, err.message);
   }
@@ -438,7 +494,9 @@ async function onRegister(event) {
     state.payment = null;
     renderMe();
     await loadSeats();
-    showMessage($("me-msg"), t("pub.register.done"), "success");
+    showMessage($("me-msg"), data.confirmation_required
+      ? t("pub.register.doneConfirm", { email: data.user.email, deadline: formatDeadline(data.user.confirm_until) })
+      : t("pub.register.done"), "success");
   } catch (err) {
     showMessage(msg, err.message);
   }
@@ -480,7 +538,7 @@ async function init() {
   setInterval(() => refresh().catch(() => {}), 15000);
   // a login link opened in a tab that already shows the page only changes the hash
   window.addEventListener("hashchange", async () => {
-    if (!location.hash.startsWith("#login=")) return;
+    if (!LINK_RE.test(location.hash)) return;
     await handleLoginLink();
     await refresh();
   });

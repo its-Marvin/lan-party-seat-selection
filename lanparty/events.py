@@ -24,7 +24,7 @@ from .i18n import tr
 STATUSES = ("draft", "upcoming", "active", "archived")
 # what a new event copies from the one it is based on (dates and code are per event)
 COPIED_KEYS = ("event_name", "location", "description", "paypal_address", "amount_cents",
-               "reservation_hours", "layout", "theme")
+               "reservation_hours", "layout", "theme", "payment_reminders")
 
 
 class EventError(ValueError):
@@ -32,7 +32,10 @@ class EventError(ValueError):
 
 
 def timezone_name() -> str:
-    return current_app.config.get("TIMEZONE", "") if has_app_context() else ""
+    if not has_app_context():
+        return ""
+    from . import appsettings
+    return appsettings.value("timezone") or ""
 
 
 def local_now() -> datetime:
