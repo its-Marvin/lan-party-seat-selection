@@ -15,7 +15,7 @@ def test_relative_themes_dir_is_listed_and_served_from_the_same_folder(tmp_path,
                       "ADMIN_PASSWORD": ADMIN_PW, "THEMES_DIR": "mythemes"})
     assert Path(app.config["THEMES_DIR"]).is_absolute()
     admin = app.test_client()
-    admin.post("/api/admin/login", json={"password": ADMIN_PW})
+    admin.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW})
     assert "neon" in [t["id"] for t in admin.get("/api/admin/themes").get_json()["themes"]]
     res = app.test_client().get("/themes/neon/theme.css")
     assert res.status_code == 200 and b"data-mode" in res.data

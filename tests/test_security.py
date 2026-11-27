@@ -8,7 +8,7 @@ from flask import Flask
 from flask.sessions import SecureCookieSessionInterface
 
 from lanparty import create_app
-from lanparty.db import get_db
+from lanparty.db import get_db, utc_now
 from tests.helpers import EVENT_CODE, set_event_code
 
 ADMIN_PW = "correct horse battery"
@@ -35,7 +35,7 @@ def ip(addr):
 
 
 def login(client, password=ADMIN_PW, name="Alice Admin", addr="10.0.0.1"):
-    return client.post("/api/admin/login", json={"password": password, "name": name}, **ip(addr))
+    return client.post("/api/admin/login", json={"name": "Test Admin", "password": password, "name": name}, **ip(addr))
 
 
 def register(client, n, addr="10.1.0.1"):
@@ -47,7 +47,8 @@ def register(client, n, addr="10.1.0.1"):
 def sql(app, query, params=()):
     with app.app_context():
         db = get_db()
-        rows = db.execute(query, params).fetchall()
+        cur = db.execute(query, params)
+        rows = cur.fetchall() if cur.description else []
         db.commit()
         return rows
 
@@ -205,7 +206,7 @@ def test_unpaid_reservation_expires(app, client):
     assert me["user"]["reserved_until"].endswith("Z")
     assert me["payment"]["reserved_until"] == me["user"]["reserved_until"]
 
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-49 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-49),))
     seats = {s["id"]: s["status"] for s in client.get("/api/seats").get_json()["seats"]}
     assert seats["A1"] == "free"
     assert client.get("/api/me", headers=headers).get_json()["user"]["seat"] is None
@@ -219,7 +220,7 @@ def test_unpaid_reservation_expires(app, client):
 def test_switching_seat_keeps_deadline(app, client):
     headers, _ = register(client, 1)
     client.post("/api/me/seat", json={"seat": "A1"}, headers=headers)
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-40 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-40),))
     before = client.get("/api/me", headers=headers).get_json()["user"]["reserved_until"]
     client.post("/api/me/seat", json={"seat": "A2"}, headers=headers)
     client.delete("/api/me/seat", headers=headers)
@@ -233,7 +234,7 @@ def test_paid_seats_never_expire(app, client):
     headers, uid = register(client, 1)
     client.post("/api/me/seat", json={"seat": "A1"}, headers=headers)
     admin.post(f"/api/admin/users/{uid}/paid", json={"paid": True})
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-400 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-400),))
     user = client.get("/api/me", headers=headers).get_json()["user"]
     assert user["seat"] == "A1" and user["reserved_until"] is None
 
@@ -244,7 +245,7 @@ def test_revoking_payment_starts_new_window(app, client):
     headers, uid = register(client, 1)
     client.post("/api/me/seat", json={"seat": "A1"}, headers=headers)
     admin.post(f"/api/admin/users/{uid}/paid", json={"paid": True})
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-400 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-400),))
     admin.post(f"/api/admin/users/{uid}/paid", json={"paid": False})
     assert client.get("/api/me", headers=headers).get_json()["user"]["seat"] == "A1"
 
@@ -256,7 +257,7 @@ def test_expiry_can_be_disabled_and_configured(app, client):
     headers, _ = register(client, 1)
     me = client.post("/api/me/seat", json={"seat": "A1"}, headers=headers).get_json()
     assert me["user"]["reserved_until"] is None
-    sql(app, "UPDATE users SET reserved_at = datetime('now', '-1000 hours')")
+    sql(app, "UPDATE users SET reserved_at = ?", (utc_now(-1000),))
     assert client.get("/api/me", headers=headers).get_json()["user"]["seat"] == "A1"
     for bad in (-1, 1441, "abc", 1.5, True):
         assert admin.put("/api/admin/settings", json={"reservation_hours": bad}).status_code == 400
@@ -422,11 +423,35 @@ def test_audit_requires_admin(client):
 
 
 def test_actor_name_is_sanitised(app, client):
-    assert login(client, name="Bob‮\x00" + "x" * 100).get_json()["actor"] == "Bob" + "x" * 37
+    assert login(client, name="Bob‮\x07" + "x" * 100).get_json()["actor"] == "Bob" + "x" * 37
+    # NUL is refused outright (PostgreSQL can't store it), like in every JSON body
+    assert login(client, name="Bob\x00").status_code == 400
+
+
+@pytest.mark.parametrize("name", [None, "", "   ", "‮\x07"])
+def test_admin_login_requires_a_name(app, client, name):
+    """Every audit entry names the admin: no anonymous "admin" fallback any more."""
+    body = {"password": ADMIN_PW} if name is None else {"password": ADMIN_PW, "name": name}
+    resp = client.post("/api/admin/login", json=body, **ip("10.0.0.1"))
+    assert resp.status_code == 400 and "name" in resp.get_json()["error"]
+    assert client.get("/api/admin/session").get_json()["admin"] is False
+    with app.app_context():
+        assert get_db().execute("SELECT COUNT(*) FROM admin_sessions").fetchone()[0] == 0
+
+
+def test_missing_name_costs_no_login_attempt_and_reveals_nothing(tmp_path):
+    app = make_app(tmp_path, ADMIN_LOGIN_MAX_PER_IP=2)
+    client = app.test_client()
+    for password in ("wrong", ADMIN_PW, "wrong", ADMIN_PW):
+        # same answer for right and wrong passwords, and the limit isn't touched
+        assert login(client, password=password, name="").status_code == 400
+    assert login(client).status_code == 200
+    assert "admin.login_failed" not in [e["action"] for e in sql_entries(app)]
 
 
 # --- migration of databases from older versions ------------------------------
 
+@pytest.mark.sqlite_only
 def test_old_database_is_migrated(tmp_path):
     path = tmp_path / "old.sqlite3"
     db = sqlite3.connect(path)

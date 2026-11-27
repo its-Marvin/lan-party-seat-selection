@@ -1,10 +1,21 @@
 """Shared test helpers."""
 
+from lanparty import db as dbmod
 from lanparty.db import get_db
 
 # Registration is closed until an event code is set (secure by default), so
 # most tests configure this code and send it when registering.
 EVENT_CODE = "TEST42"
+
+
+def other_connection(app, timeout: float = 10):
+    """A second database connection, as another worker process would open it."""
+    conn = dbmod.connect(dbmod.database_target(app.config))
+    if conn.dialect == "sqlite":
+        conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
+    else:
+        conn.execute(f"SET lock_timeout = '{int(timeout * 1000)}ms'")
+    return conn
 
 
 def first_event_id(db) -> int:

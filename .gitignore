@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 instance/
 *.sqlite3
+
+# Docker deployment
+.env
+/themes/

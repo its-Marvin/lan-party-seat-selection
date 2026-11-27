@@ -9,7 +9,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .api import bp as api_bp
-from .db import init_db
+from .db import database_target, init_db, is_postgres
 from . import events, themes
 
 MIN_ADMIN_PASSWORD_LENGTH = 12
@@ -31,6 +31,8 @@ def create_app(config: dict | None = None) -> Flask:
 
     app.config.update(
         DATABASE=os.environ.get("DATABASE", str(instance / "lanparty.sqlite3")),
+        # PostgreSQL connection URL (postgresql://user:password@host/db); overrides DATABASE
+        DATABASE_URL=os.environ.get("DATABASE_URL", "").strip(),
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", ""),
         ALLOW_WEAK_ADMIN_PASSWORD=os.environ.get("ALLOW_WEAK_ADMIN_PASSWORD", "0") == "1",
         # Flask's signed session is not used for authentication; admin sessions
@@ -58,6 +60,9 @@ def create_app(config: dict | None = None) -> Flask:
     )
     if config:
         app.config.update(config)
+        if "DATABASE" in config and "DATABASE_URL" not in config:
+            # an explicit SQLite path (e.g. a test's temp file) beats an inherited DATABASE_URL
+            app.config["DATABASE_URL"] = ""
 
     password = app.config["ADMIN_PASSWORD"]
     if not password:
@@ -86,7 +91,8 @@ def create_app(config: dict | None = None) -> Flask:
         n = app.config["TRUSTED_PROXIES"]
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=n, x_proto=n, x_host=n)
 
-    Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
+    if not is_postgres(database_target(app.config)):
+        Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     init_db(app)
     app.register_blueprint(api_bp)
 

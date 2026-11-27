@@ -6,14 +6,17 @@ import threading
 import time
 from datetime import datetime
 
+import pytest
+
 from lanparty import create_app
+from lanparty import db as dbmod
 from lanparty import settings as cfg
-from tests.helpers import set_event_code
+from tests.helpers import other_connection, set_event_code
 from tests.test_review_fixes import ADMIN_PW, admin, app, make_app, register, run_parallel  # noqa: F401
 
 
 def login(client):
-    assert client.post("/api/admin/login", json={"password": ADMIN_PW}).status_code == 200
+    assert client.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW}).status_code == 200
     return client
 
 
@@ -67,6 +70,7 @@ def legacy_db(path, paid=0, amount_cents=None):
     db.close()
 
 
+@pytest.mark.sqlite_only
 def test_parallel_startup_migrates_legacy_database_once(tmp_path):
     path = tmp_path / "legacy.sqlite3"
     legacy_db(path)
@@ -85,6 +89,7 @@ def test_parallel_startup_migrates_legacy_database_once(tmp_path):
     assert me["user"]["seat"] == "A1"
 
 
+@pytest.mark.sqlite_only
 def test_migration_backfills_amount_of_old_payments(tmp_path):
     path = tmp_path / "legacy-paid.sqlite3"
     legacy_db(path, paid=1, amount_cents=1500)
@@ -137,7 +142,7 @@ def test_seat_plan_is_one_consistent_snapshot(app, monkeypatch):
     def load_then_concurrent_write(event_id):
         layout = real_load(event_id)
         # another worker tries to move the reservation between the two reads
-        other = sqlite3.connect(app.config["DATABASE"], timeout=0.3)
+        other = other_connection(app, timeout=0.3)
         try:
             other.execute("UPDATE users SET seat = 'B1' WHERE seat = 'A1'")
             other.commit()
@@ -150,5 +155,7 @@ def test_seat_plan_is_one_consistent_snapshot(app, monkeypatch):
 
     monkeypatch.setattr(api_module.lay, "load", load_then_concurrent_write)
     seats = {s["id"]: s for s in client.get("/api/seats").get_json()["seats"]}
-    assert outcome["write"] == "blocked"
+    # SQLite blocks the writer; PostgreSQL lets it commit, but the snapshot doesn't see it
+    sqlite = not dbmod.is_postgres(dbmod.database_target(app.config))
+    assert outcome["write"] == ("blocked" if sqlite else "committed")
     assert seats["A1"]["status"] == "reserved" and seats["B1"]["status"] == "free"

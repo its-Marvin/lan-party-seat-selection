@@ -1,6 +1,6 @@
 """Security helpers: client IPs, rate limiting, admin sessions, audit log.
 
-Everything is stored in SQLite so it works across several worker processes.
+Everything is stored in the database so it works across several worker processes.
 """
 
 import hashlib
@@ -38,7 +38,8 @@ def _pepper() -> str:
     if row:
         return row["value"]
     value = secrets.token_hex(32)
-    db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (PEPPER_KEY, value))
+    db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT DO NOTHING",
+               (PEPPER_KEY, value))
     db.commit()
     return db.execute("SELECT value FROM settings WHERE key = ?", (PEPPER_KEY,)).fetchone()["value"]
 
@@ -65,8 +66,7 @@ def consume(bucket: str, key: str, limit: int, window: float) -> tuple[int, int 
             "SELECT ts FROM rate_events WHERE bucket = ? AND key = ? ORDER BY ts", (bucket, key))]
         if len(events) >= limit:
             return max(1, int(events[-limit] + window - now) + 1), None
-        cur = db.execute("INSERT INTO rate_events (bucket, key, ts) VALUES (?, ?, ?)", (bucket, key, now))
-        return 0, cur.lastrowid
+        return 0, db.insert("INSERT INTO rate_events (bucket, key, ts) VALUES (?, ?, ?)", (bucket, key, now))
 
 
 def release(event_id: int | None) -> None:
@@ -74,7 +74,7 @@ def release(event_id: int | None) -> None:
     if event_id is None:
         return
     db = get_db()
-    db.execute("DELETE FROM rate_events WHERE rowid = ?", (event_id,))
+    db.execute(f"DELETE FROM rate_events WHERE {db.rowid} = ?", (event_id,))
     db.commit()
 
 

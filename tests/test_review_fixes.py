@@ -7,7 +7,7 @@ import pytest
 
 from lanparty import api, create_app
 from lanparty import layout as lay
-from lanparty.db import get_db
+from lanparty.db import get_db, utc_now
 from tests.helpers import EVENT_CODE, set_event_code
 
 ADMIN_PW = "correct horse battery"
@@ -27,7 +27,7 @@ def app(tmp_path):
 @pytest.fixture
 def admin(app):
     c = app.test_client()
-    assert c.post("/api/admin/login", json={"password": ADMIN_PW}).status_code == 200
+    assert c.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW}).status_code == 200
     return c
 
 
@@ -137,7 +137,7 @@ def test_expiry_audit_keeps_the_seat(app, admin):
     c.post("/api/me/seat", json={"seat": "A7"}, headers=h)
     with app.app_context():
         db = get_db()
-        db.execute("UPDATE users SET reserved_at = datetime('now', '-49 hours')")
+        db.execute("UPDATE users SET reserved_at = ?", (utc_now(-49),))
         db.commit()
     c.get("/api/info")
     entry = next(e for e in admin.get("/api/admin/audit").get_json()["entries"] if e["action"] == "reservation.expired")
@@ -196,7 +196,7 @@ def test_parallel_code_guesses_respect_limit(app):
 
 def test_parallel_admin_guesses_respect_limit(app):
     def attempt(i):
-        return app.test_client().post("/api/admin/login", json={"password": f"guess-{i}"}, **ip("10.5.5.5")).status_code
+        return app.test_client().post("/api/admin/login", json={"name": "Test Admin", "password": f"guess-{i}"}, **ip("10.5.5.5")).status_code
 
     codes = run_parallel(25, attempt)
     assert codes.count(401) == 5 and codes.count(429) == 20

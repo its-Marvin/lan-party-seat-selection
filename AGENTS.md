@@ -16,13 +16,36 @@ Requirements from the owner: **no Java**, tests and README required.
 
 ## Stack and commands
 
-- Python 3.11+ (dev machine: 3.14), Flask 3.1, SQLite through stdlib `sqlite3`, plain
-  HTML/CSS/JS with no build step and no framework. pytest for tests.
+- Python 3.11+ (dev machine: 3.14), Flask 3.1, plain HTML/CSS/JS with no build step and no
+  framework. pytest for tests.
+- Database: SQLite through stdlib `sqlite3` (default, dev and tests) **or** PostgreSQL through
+  psycopg 3 when `DATABASE_URL` is set (Docker deployment). Same queries for both, see below.
+  A `DATABASE` passed in `create_app(config)` without `DATABASE_URL` clears an inherited
+  `DATABASE_URL`, so tests can never write to a real database from the shell environment.
+- Docker: `Dockerfile` (python:3.13-slim, gunicorn 27 with `--no-control-socket`, non-root) and
+  `docker-compose.yml` (pulls `ghcr.io/its-marvin/lan-party-seat-selection:${LANPARTY_VERSION}`
+  + postgres:17-alpine, secrets from `.env`, see `.env.example`). `docker-compose.build.yml` is the
+  override that builds from the checkout instead.
+- CI: `.github/workflows/tests.yml` (every branch push; SQLite on 3.11/3.13 and Postgres 17) and
+  `docker.yml` (PRs: build only; a **published release** whose tag is on `main`: checks that,
+  calls tests.yml, then pushes a multi-arch image `:X.Y.Z` to GHCR. A separate `aliases` job in
+  the global `docker-aliases` concurrency group runs `.github/scripts/update-image-aliases.sh`:
+  every `:X`/`:X.Y` = newest stable release in that line, `:latest` = GitHub's
+  `releases/latest`. Each run reconciles **all** lines from the full release list, because GitHub
+  cancels older *pending* jobs in a concurrency group even with `cancel-in-progress: false`. `tests/test_ci.py` runs the script with stub
+  `gh`/`docker`.
+  The owner wants images published **only on releases**, never on pushes to main. Keep actions
+  on their Node 24 majors (Node 20 actions trigger deprecation warnings). Lint workflows with
+  `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest`. The repo is public; after
+  the first publish, check that the GHCR package is public too (new packages can start private).
 - The venv is at `.venv`. There is no system pip, and Node is not installed.
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pytest -q                                   # ~293 tests, ~4 s
+.venv/bin/pytest -q                                   # ~305 tests, ~5 s
+# the same suite on PostgreSQL (~30 s; a schema per test, sqlite_only tests skipped):
+docker run -d --rm --name lanparty-pg-test -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:17-alpine
+LANPARTY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/postgres .venv/bin/pytest -q
 ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (HOST/PORT env)
 ```
 
@@ -40,7 +63,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 |---|---|
 | `lanparty/__init__.py` | `create_app(config)`: reads config from env, adds security headers (strict CSP), JSON error handlers for `/api`, routes `/`, `/admin`, `/favicon.ico` (204) |
 | `lanparty/api.py` | Blueprint `/api`: participant, login-link, event-code and admin endpoints; `assign_seat()`; reservation expiry in `before_request` |
-| `lanparty/db.py` | Schema, `get_db()`, `write_transaction()` (BEGIN IMMEDIATE), `read_snapshot()` (deferred read txn), `_migrate()` |
+| `lanparty/db.py` | `SCHEMA` (SQLite) and `PG_SCHEMA`, `SqliteConnection` / `PgConnection` (sqlite3-style adapter over psycopg), `get_db()`, `write_transaction()`, `read_snapshot()`, `utc_now()`, `IntegrityError`, `_migrate()` |
 | `lanparty/events.py` | Events and their status from dates (`local_now()` in `TIMEZONE`), `active_id()` (cached in `g`), `default_admin_id()`, overlap check, `create()`/`delete()` (no commit) |
 | `lanparty/settings.py` | Per-event settings: `DEFAULTS`, `load(event_id)`, `validate_update(data, event_id)`, `save(values, event_id)` (does **not** commit) |
 | `lanparty/layout.py` | Seat layout model: validation, `seat_ids`, `plan_seat_moves`, `load(event_id)`, `save(layout, moves, event_id)` (no commit) |
@@ -55,12 +78,26 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 | `lanparty/static/theme.js` | Auto/Light/Dark colour mode → `data-mode` on `<html>`, `?theme=<id>` preview; loaded **without defer** in `<head>` |
 | `lanparty/themes.py` | Theme discovery (built-in `lanparty/themes/<id>/`, custom `THEMES_DIR`), validation (both `data-mode` blocks required), `get()` |
 | `lanparty/themes/` | Built-in themes `default` (empty overrides) and `retro`; `THEMES.md` is the guide for theme authors |
-| `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
+| `tests/` | `conftest.py` (autouse `frozen_event_clock`: tests run at 2026-06-01 12:00), `helpers.py` (`EVENT_CODE`, `set_event_code`, `set_event_setting`), `test_app`, `test_events`, `test_layout`, `test_security`, `test_event_code`, `test_review_fixes`, `test_review_round2`, `test_themes`, `test_i18n`, `test_database` (adapter, schema parity, portable SQL, Docker files), `test_review_pr2`…`test_review_pr4_round2` (regression tests per Copilot review) |
 
 ## Rules that must not break
 
 ### Data and concurrency
-- The app runs with **several workers on one SQLite file**. Any read-modify-write must run
+- **SQL must run on SQLite and PostgreSQL.** Write it SQLite-style (`?` placeholders;
+  `PgConnection` translates them) but portable: timestamps come from `utc_now(hours)` as a
+  parameter (no `datetime('now')`), `ON CONFLICT DO NOTHING` (no `INSERT OR IGNORE`; after an
+  `INSERT … SELECT` SQLite needs `WHERE true`), `db.insert(sql)` for new ids (no `lastrowid`),
+  `db.rowid` for `rate_events`, `CASE WHEN ? = 1` (Postgres wants booleans there), catch
+  `db.IntegrityError`. `test_database.py::test_app_sql_is_portable` checks the obvious cases;
+  run the suite on Postgres after SQL changes.
+- Postgres text columns use `COLLATE "C"`, so timestamp text compares and `ORDER BY` match SQLite.
+  Use `DOUBLE PRECISION`, never `REAL` (float4).
+- `PgConnection` mimics `sqlite3`: autocommit, and a write statement outside a transaction opens
+  one **and takes the global advisory lock** until `commit()`. `write_transaction()` = `BEGIN` +
+  `pg_advisory_xact_lock`; `read_snapshot()` = `REPEATABLE READ` (a concurrent writer is not
+  blocked but stays invisible). In Postgres, an error aborts the transaction: don't keep using it
+  after a failed statement.
+- The app runs with **several workers on one database**. Any read-modify-write must run
   inside `db.write_transaction()`. Code inside it must not call `commit()` (`settings.save` and
   `layout.save` deliberately don't).
 - `security.ip_hash()` can write (it creates the pepper on first use). Call it **before**
@@ -71,8 +108,10 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 - Rate limits use `security.consume()`, which checks and records atomically. Call
   `release(event_id)` on success where attempts should only count failures (admin login,
   event code).
-- Schema changes go in both `SCHEMA` and `_migrate()`. `_migrate()` takes the write lock
-  **before** inspecting columns. Old DBs must keep working (tests cover this).
+- Schema changes go in `SCHEMA`, `PG_SCHEMA` **and** `_migrate()` (`db.columns()` works for both;
+  `test_sqlite_and_postgres_schemas_have_the_same_columns` checks parity). `_migrate()` takes the
+  write lock **before** inspecting columns (Postgres also creates its tables under it). Old DBs
+  must keep working (tests cover this). The legacy SQLite rebuild steps never run on Postgres.
 
 ### Events
 - Per-event data lives in `event_settings(event_id, key, value)` (settings **and** the layout under
@@ -117,13 +156,16 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
   hidden. With a code (`[A-Z0-9]{4,6}`, normalised to uppercase), names show only to code
   holders (`X-Event-Code` header), participants and admins. Wrong codes are rate-limited on
   every endpoint. `/api/info` never contains the code.
+- Admins must give a name at login (400 otherwise, checked before the rate limit so it costs no
+  attempt); it is the `actor` in the audit log. There is no `"admin"` fallback.
 - Admin auth uses a server-side session (`lp_admin` cookie: HttpOnly, SameSite=Strict,
   Path=/api) with 60 min idle and 12 h max. Changing `ADMIN_PASSWORD` invalidates all sessions.
   Passwords under 12 characters are refused unless `ALLOW_WEAK_ADMIN_PASSWORD=1` or TESTING.
 - Participants use device tokens (`user_tokens`, stored hashed). One-time login links are
   `/#login=<code>`, kept in the URL fragment so they stay out of server logs. They are valid
   for `LOGIN_CODE_HOURS` (default **168 h = 7 days**, the owner wants at least a week).
-- Strict JSON parsing (rejects NaN/Infinity and overflowing numbers), 256 KB body limit,
+- Strict JSON parsing (rejects NaN/Infinity, overflowing numbers and NUL characters anywhere,
+  which PostgreSQL can't store), 256 KB body limit,
   `Cache-Control: no-store` on `/api`, `TRUSTED_PROXIES` for ProxyFix.
 - Audit everything an admin would want to trace (`security.audit`). Inside a write transaction
   use `security.record_audit()` (no commit), so the entry describes exactly the change made under
@@ -197,6 +239,7 @@ ADMIN_PASSWORD='at-least-12-chars' .venv/bin/python -m lanparty   # dev server (
 
 ## Ideas not done yet (only if asked)
 
+- A tool to copy an existing SQLite database into PostgreSQL. New Postgres databases start empty.
 - A cut-off for self-service seat switching (for example none after the event starts).
 - Email delivery of login links. Currently admins copy the link manually.
 - Translating event content (name, description) per language; translating audit log actions.

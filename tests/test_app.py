@@ -26,7 +26,7 @@ def client(app):
 @pytest.fixture
 def admin(app):
     c = app.test_client()
-    assert c.post("/api/admin/login", json={"password": ADMIN_PW}).status_code == 200
+    assert c.post("/api/admin/login", json={"name": "Test Admin", "password": ADMIN_PW}).status_code == 200
     return c
 
 
@@ -214,18 +214,18 @@ def test_user_token_does_not_grant_admin(client):
 
 
 def test_admin_login_wrong_password(client):
-    assert client.post("/api/admin/login", json={"password": "nope"}).status_code == 401
+    assert client.post("/api/admin/login", json={"name": "Test Admin", "password": "nope"}).status_code == 401
     assert client.get("/api/admin/session").get_json()["admin"] is False
 
 
 def test_admin_login_disabled_without_password(tmp_path):
     app = create_app({"DATABASE": str(tmp_path / "x.sqlite3"), "ADMIN_PASSWORD": "", "SECRET_KEY": "t"})
-    res = app.test_client().post("/api/admin/login", json={"password": ""})
+    res = app.test_client().post("/api/admin/login", json={"name": "Test Admin", "password": ""})
     assert res.status_code == 503
 
 
 def test_admin_logout(admin):
-    assert admin.get("/api/admin/session").get_json() == {"admin": True, "actor": "admin"}
+    assert admin.get("/api/admin/session").get_json() == {"admin": True, "actor": "Test Admin"}
     admin.post("/api/admin/logout")
     assert admin.get("/api/admin/users").status_code == 401
 

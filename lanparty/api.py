@@ -6,7 +6,6 @@ import hmac
 import json
 import math
 import re
-import sqlite3
 import time
 import unicodedata
 
@@ -18,7 +17,7 @@ from . import security as sec
 from . import settings as cfg
 from . import themes as th
 from .i18n import N_, tr
-from .db import get_db, read_snapshot, write_transaction
+from .db import IntegrityError, get_db, read_snapshot, utc_now, write_transaction
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -60,8 +59,26 @@ def _finite_float(text):
     return value
 
 
+def _contains_nul(value) -> bool:
+    """Any string (or key) with a NUL, at any depth. Iterative: json.loads accepts
+    nesting deeper than Python's recursion limit allows a recursive walk."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            if "\x00" in item:
+                return True
+        elif isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return False
+
+
 def json_body() -> dict:
-    """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON types)."""
+    """Strictly parse a JSON object body (rejects NaN/Infinity, deep nesting, non-JSON
+    types, and NUL characters, which PostgreSQL can't store in text)."""
     if not request.is_json:
         raise ApiError(415, tr("Expected a JSON request body (Content-Type: application/json)."))
     try:
@@ -71,6 +88,8 @@ def json_body() -> dict:
         raise ApiError(400, tr("Malformed JSON.")) from None
     if not isinstance(data, dict):
         raise ApiError(400, tr("Expected a JSON object."))
+    if _contains_nul(data):
+        raise ApiError(400, tr("Text must not contain NUL characters."))
     return data
 
 
@@ -169,8 +188,8 @@ def release_expired_reservations():
     if hours <= 0:
         return
     expired_sql = ("SELECT id, name, email, seat FROM users WHERE event_id = ? AND paid = 0 "
-                   "AND seat IS NOT NULL AND reserved_at IS NOT NULL AND reserved_at <= datetime('now', ?)")
-    window = (event_id, f"-{hours} hours")
+                   "AND seat IS NOT NULL AND reserved_at IS NOT NULL AND reserved_at <= ?")
+    window = (event_id, utc_now(-hours))
     if not get_db().execute(expired_sql, window).fetchone():
         return  # cheap check without taking the write lock
     with write_transaction() as db:
@@ -180,7 +199,7 @@ def release_expired_reservations():
         hours = event["reservation_hours"]
         if ev.status(event) != "active" or hours <= 0:
             return
-        window = (event_id, f"-{hours} hours")
+        window = (event_id, utc_now(-hours))
         # read the rows (with their seats) and clear them under the same lock
         released = db.execute(expired_sql, window).fetchall()
         db.executemany(
@@ -331,7 +350,8 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False, admin
         if state == "archived":
             raise ApiError(409, tr(ARCHIVED_READ_ONLY))
         hours = event["reservation_hours"]
-        window = f"-{hours} hours" if hours > 0 else "-1000 years"
+        # reservations started before this have run out ("" = never: no timestamp sorts before it)
+        cutoff = utc_now(-hours) if hours > 0 else ""
         if by_participant and user["paid"] and seat_value is None:
             # giving up a paid seat means a refund: that stays with the admins
             raise ApiError(409, tr(PAID_NO_RELEASE))
@@ -353,16 +373,17 @@ def assign_seat(user_id: int, seat_value, *, by_participant: bool = False, admin
                                        "Please wait until earlier reservations are paid or released."))
         else:
             ip_key = None  # keep the IP of the original reservation
+        now = utc_now()
         try:
             db.execute(
-                "UPDATE users SET seat = ?, seat_selected_at = datetime('now'), "
-                "reserved_at = CASE WHEN reserved_at IS NULL OR reserved_at <= datetime('now', ?) "
-                "                   THEN datetime('now') ELSE reserved_at END, "
+                "UPDATE users SET seat = ?, seat_selected_at = ?, "
+                "reserved_at = CASE WHEN reserved_at IS NULL OR reserved_at <= ? "
+                "                   THEN ? ELSE reserved_at END, "
                 "reserved_ip_hash = COALESCE(?, reserved_ip_hash) "
                 "WHERE id = ?",
-                (seat, window, ip_key, user_id),
+                (seat, now, cutoff, now, ip_key, user_id),
             )
-        except sqlite3.IntegrityError:
+        except IntegrityError:
             raise ApiError(409, tr("Seat {seat} is already taken.", seat=seat)) from None
         return _audit_seat_change(db, user, by_participant, admin)
 
@@ -473,18 +494,18 @@ def register():
             event_id = require_active_event()
             if ev.status(cfg.load(event_id)) != "active":  # dates changed in the meantime
                 raise ApiError(403, tr("There is no event open for registration right now."))
-            cur = db.execute(
+            user_id = db.insert(
                 "INSERT INTO users (event_id, name, email, token_hash) VALUES (?, ?, ?, ?)",
                 (event_id, name, email, sec.sha256(token)),
             )
             db.execute("INSERT INTO user_tokens (token_hash, user_id) VALUES (?, ?)",
-                       (sec.sha256(token), cur.lastrowid))
-    except sqlite3.IntegrityError:
+                       (sec.sha256(token), user_id))
+    except IntegrityError:
         raise ApiError(
             409, tr("This email address is already registered. Open a login link from a device "
                     "where you are logged in, or ask an admin for one.")
         ) from None
-    return jsonify(token=token, user=user_dict(get_user(cur.lastrowid))), 201
+    return jsonify(token=token, user=user_dict(get_user(user_id))), 201
 
 
 @bp.get("/me")
@@ -630,8 +651,9 @@ def event_summary(e: dict) -> dict:
 
 
 def clean_actor_name(value) -> str:
+    """The admin's name for the audit log, without control characters ("" if none is left)."""
     text = "".join(ch for ch in str(value or "") if unicodedata.category(ch)[0] != "C").strip()
-    return text[:40] or "admin"
+    return text[:40].strip()
 
 
 @bp.post("/admin/login")
@@ -640,6 +662,11 @@ def admin_login():
     if not expected:
         raise ApiError(503, tr("Admin login is disabled: ADMIN_PASSWORD is not set."))
     data = json_body()
+    # every audit entry must say which admin did it; checked before the rate limit,
+    # so a forgotten name costs no login attempt (and says nothing about the password)
+    name = clean_actor_name(data.get("name"))
+    if not name:
+        raise ApiError(400, tr("Please enter your name. It shows in the audit log."))
     ip = sec.client_ip()
     key = sec.ip_hash(ip)
     window = conf("ADMIN_LOGIN_WINDOW_MINUTES") * 60
@@ -654,7 +681,6 @@ def admin_login():
     if wait:
         raise ApiError(429, tr("Too many failed logins. Please try again in {wait}.", wait=human_wait(wait)),
                        retry_after=wait)
-    name = clean_actor_name(data.get("name"))
     password = str(data.get("password") or "")
     if not hmac.compare_digest(password.encode(), expected.encode()):
         sec.audit("anonymous", "admin.login_failed", ip=ip, name=name)
@@ -778,13 +804,14 @@ def admin_set_paid(user_id):
     with write_transaction() as db:
         require_not_archived(user["event_id"])
         amount = cfg.load(user["event_id"])["amount_cents"]
+        now = utc_now()
         changed = db.execute(
-            "UPDATE users SET paid = ?, paid_at = CASE WHEN ? THEN datetime('now') END, "
-            "paid_amount_cents = CASE WHEN ? THEN ? END, "
-            "reserved_at = CASE WHEN ? THEN reserved_at "
-            "                   WHEN seat IS NOT NULL THEN datetime('now') END "
+            "UPDATE users SET paid = ?, paid_at = ?, paid_amount_cents = ?, "
+            "reserved_at = CASE WHEN ? = 1 THEN reserved_at "
+            "                   WHEN seat IS NOT NULL THEN ? END "
             "WHERE id = ? AND paid != ?",
-            (int(paid), int(paid), int(paid), amount, int(paid), user_id, int(paid)),
+            (int(paid), now if paid else None, amount if paid else None,
+             int(paid), now, user_id, int(paid)),
         ).rowcount
     if changed:
         sec.audit(actor(), "payment.confirmed" if paid else "payment.revoked", **user_summary(user))
